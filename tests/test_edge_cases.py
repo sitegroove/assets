@@ -529,27 +529,22 @@ class TestRegistryEdgeCases:
         assert len(result) == 1
         assert result[0].target_field == "user_id"
 
-    def test_register_self_referencing_sql_is_filtered(self):
-        """Self-references in SQL should be filtered out to maintain DAG invariant."""
+    def test_register_self_referencing_sql_raises(self):
+        """Self-references in SQL should raise a ValueError."""
         registry = Registry()
         a = Asset(name="loop", sql="SELECT * FROM {{ ref('loop') }}")
-        registry.register(a)
-        # Self-reference should be filtered out
-        assert "loop" not in a.depends_on
-        assert len(registry.dependencies) == 0
+        with pytest.raises(ValueError, match="self-reference"):
+            registry.register(a)
 
-    def test_self_ref_mixed_with_real_refs(self):
-        """Self-references are filtered but other refs are preserved."""
+    def test_self_ref_mixed_with_real_refs_raises(self):
+        """Self-references raise even when mixed with valid refs."""
         registry = Registry()
         a = Asset(
             name="staging.users",
             sql="SELECT * FROM {{ ref('raw.users') }} JOIN {{ ref('staging.users') }}",
         )
-        registry.register(a)
-        # Only the non-self reference should remain
-        assert a.depends_on == ["raw.users"]
-        assert len(registry.dependencies) == 1
-        assert registry.dependencies[0].source == "raw.users"
+        with pytest.raises(ValueError, match="self-reference"):
+            registry.register(a)
 
     def test_registry_len(self):
         registry = Registry()

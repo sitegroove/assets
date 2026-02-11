@@ -33,8 +33,13 @@ class Registry:
         self._graph = None  # invalidate cached graph
         if asset.sql:
             refs = self._ref_resolver.extract_refs(asset.sql)
-            # Filter out self-references to maintain DAG invariant
-            refs = [ref for ref in refs if ref != asset.name]
+            # Reject self-references — they violate the DAG invariant
+            # and are almost certainly a mistake in the SQL template
+            if asset.name in refs:
+                raise ValueError(
+                    f"Asset '{asset.name}' contains a self-reference in its SQL. "
+                    f"An asset cannot depend on itself."
+                )
             asset.depends_on = refs
             for ref in refs:
                 self._dependencies.append(
