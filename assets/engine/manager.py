@@ -27,6 +27,12 @@ class ApplyResult(BaseModel):
     deleted: int = 0
     environment: str = ""
 
+    def __repr__(self) -> str:
+        return (
+            f"ApplyResult(environment={self.environment!r}, "
+            f"created={self.created}, updated={self.updated}, deleted={self.deleted})"
+        )
+
 
 class ResolvedState(BaseModel):
     """State after walking parent chain and merging layers."""
@@ -37,7 +43,14 @@ class ResolvedState(BaseModel):
 
 
 class StateManager:
-    """Main orchestrator: combines loader, registry, backend, environments."""
+    """Main orchestrator: combines loader, registry, backend, environments.
+
+    Typical usage::
+
+        manager = StateManager.from_dir("./models")
+        plan = manager.plan("./models")
+        manager.apply(plan)
+    """
 
     def __init__(
         self,
@@ -51,6 +64,62 @@ class StateManager:
         self.backend = backend
         self.env_config = env_config
         self._differ = Differ()
+
+    @classmethod
+    def from_dir(
+        cls,
+        project_dir: str = ".",
+        *,
+        backend: StateBackend | str | None = None,
+        environments: dict[str, Environment] | None = None,
+        default_env: str = "production",
+        asset_class: type | None = None,
+        cache_dir: str | None = None,
+    ) -> StateManager:
+        """Convenience factory for common setups.
+
+        Args:
+            project_dir: Path to the project directory.
+            backend: A StateBackend instance, or a URL string for FsspecBackend
+                     (e.g., "s3://bucket/state", "gcs://bucket/state").
+                     Defaults to LocalJSONBackend.
+            environments: Dict of environments. Defaults to a single production env.
+            default_env: Default environment name.
+            asset_class: Asset subclass for the loader. Defaults to Asset.
+            cache_dir: Compiled cache directory. Defaults to <project_dir>/.assets_state/compiled.
+        """
+        from assets.core.asset import Asset
+
+        registry = Registry()
+
+        resolved_asset_class = asset_class or Asset
+        resolved_cache_dir = cache_dir or f"{project_dir}/.assets_state/compiled"
+        loader = ProjectLoader(
+            registry,
+            asset_class=resolved_asset_class,
+            cache_dir=resolved_cache_dir,
+        )
+
+        if backend is None:
+            from assets.state.local import LocalJSONBackend
+
+            resolved_backend: StateBackend = LocalJSONBackend()
+        elif isinstance(backend, str):
+            from assets.state.fsspec import FsspecBackend
+
+            resolved_backend = FsspecBackend(backend)
+        else:
+            resolved_backend = backend
+
+        if environments is None:
+            environments = {default_env: Environment(name=default_env)}
+
+        env_config = EnvironmentConfig(
+            default=default_env,
+            environments=environments,
+        )
+
+        return cls(registry, loader, resolved_backend, env_config)
 
     def plan(
         self,

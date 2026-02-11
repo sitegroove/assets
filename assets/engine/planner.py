@@ -20,6 +20,10 @@ class Plan(BaseModel):
     def has_changes(self) -> bool:
         return bool(self.changeset.asset_changes or self.changeset.dependency_changes)
 
+    def __repr__(self) -> str:
+        n = len(self.changeset.asset_changes)
+        return f"Plan(environment={self.environment!r}, changes={n})"
+
     def show(self) -> str:
         """Pretty-print the plan."""
         if not self.has_changes:
