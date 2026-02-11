@@ -1,0 +1,56 @@
+"""Plan — the result of diffing desired vs. current state."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from pydantic import BaseModel, Field
+
+from assets.engine.differ import ChangeSet
+
+
+class Plan(BaseModel):
+    """Represents a set of changes to be applied to an environment."""
+
+    changeset: ChangeSet = Field(default_factory=ChangeSet)
+    environment: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.changeset.asset_changes or self.changeset.dependency_changes)
+
+    def show(self) -> str:
+        """Pretty-print the plan."""
+        if not self.has_changes:
+            return f"No changes detected for environment '{self.environment}'."
+
+        lines: list[str] = []
+        lines.append(f"Plan for environment: {self.environment}")
+        lines.append(f"Created at: {self.created_at.isoformat()}")
+        lines.append("")
+
+        creates = [c for c in self.changeset.asset_changes if c.action == "create"]
+        updates = [c for c in self.changeset.asset_changes if c.action == "update"]
+        deletes = [c for c in self.changeset.asset_changes if c.action == "delete"]
+
+        if creates:
+            lines.append(f"  + {len(creates)} to create:")
+            for c in creates:
+                lines.append(f"    + {c.asset_name}")
+
+        if updates:
+            lines.append(f"  ~ {len(updates)} to update:")
+            for c in updates:
+                changed_fields = ", ".join(fc.field for fc in c.field_changes)
+                lines.append(f"    ~ {c.asset_name} ({changed_fields})")
+
+        if deletes:
+            lines.append(f"  - {len(deletes)} to delete:")
+            for c in deletes:
+                lines.append(f"    - {c.asset_name}")
+
+        lines.append("")
+        total = len(creates) + len(updates) + len(deletes)
+        lines.append(f"Total: {total} change(s)")
+        return "\n".join(lines)
