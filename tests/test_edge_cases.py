@@ -549,6 +549,76 @@ class TestRegistryEdgeCases:
         assert len(registry.dependencies) == 1
         assert registry.dependencies[0].source == "raw.users"
 
+    def test_cycle_detected_at_registration(self):
+        """With validate_acyclic=True (default), cycles raise at register time."""
+        registry = Registry()
+        registry.register(Asset(name="a", sql="SELECT * FROM {{ ref('b') }}"))
+        registry.register(Asset(name="b"))
+
+        # Now try to make b depend on a — creating a→b→a cycle
+        with pytest.raises(ValueError, match="cycle"):
+            registry.register(Asset(
+                name="b", sql="SELECT * FROM {{ ref('a') }}"
+            ))
+
+    def test_cycle_detection_does_not_corrupt_registry(self):
+        """Failed cyclic registration leaves registry unchanged."""
+        registry = Registry()
+        registry.register(Asset(name="a", sql="SELECT * FROM {{ ref('b') }}"))
+        registry.register(Asset(name="b"))
+        assert len(registry.dependencies) == 1
+
+        with pytest.raises(ValueError, match="cycle"):
+            registry.register(Asset(
+                name="b", sql="SELECT * FROM {{ ref('a') }}"
+            ))
+
+        # Registry unchanged — b still has no SQL deps
+        assert len(registry.dependencies) == 1
+        assert registry.dependencies[0].source == "b"
+        assert registry.dependencies[0].target == "a"
+        assert registry.get("b") is not None
+        assert registry.get("b").sql is None
+
+    def test_three_node_cycle_detected_at_registration(self):
+        """a→b→c, then c→a should be caught."""
+        registry = Registry()
+        registry.register(Asset(name="a", sql="SELECT * FROM {{ ref('b') }}"))
+        registry.register(Asset(name="b", sql="SELECT * FROM {{ ref('c') }}"))
+        registry.register(Asset(name="c"))
+
+        with pytest.raises(ValueError, match="cycle"):
+            registry.register(Asset(
+                name="c", sql="SELECT * FROM {{ ref('a') }}"
+            ))
+
+    def test_validate_acyclic_disabled(self):
+        """With validate_acyclic=False, cycles are allowed at registration."""
+        registry = Registry(validate_acyclic=False)
+        registry.register(Asset(name="a", sql="SELECT * FROM {{ ref('b') }}"))
+        registry.register(Asset(
+            name="b", sql="SELECT * FROM {{ ref('a') }}"
+        ))
+        # Cycle exists but no error at registration
+        assert len(registry.dependencies) == 2
+
+        # Cycle still detected by topological_sort
+        with pytest.raises(ValueError, match="Cycle detected"):
+            registry.graph.topological_sort()
+
+    def test_valid_deps_not_flagged_as_cycle(self):
+        """Normal diamond dependency should not be flagged."""
+        registry = Registry()
+        registry.register(Asset(name="a"))
+        registry.register(Asset(name="b", sql="SELECT * FROM {{ ref('a') }}"))
+        registry.register(Asset(name="c", sql="SELECT * FROM {{ ref('a') }}"))
+        registry.register(Asset(
+            name="d",
+            sql="SELECT * FROM {{ ref('b') }} JOIN {{ ref('c') }}",
+        ))
+        # No error — this is a valid DAG
+        assert len(registry.dependencies) == 4
+
     def test_registry_len(self):
         registry = Registry()
         assert len(registry) == 0

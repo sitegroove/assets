@@ -15,16 +15,36 @@ if TYPE_CHECKING:
 class Registry:
     """Central store of assets and dependencies with lazy graph construction."""
 
-    def __init__(self, ref_resolver: RefResolver | None = None) -> None:
+    def __init__(
+        self,
+        ref_resolver: RefResolver | None = None,
+        validate_acyclic: bool = True,
+    ) -> None:
         from assets.resolver.ref import RefResolver
 
         self._assets: dict[str, Asset] = {}
         self._dependencies: list[Dependency] = []
         self._ref_resolver = ref_resolver or RefResolver()
         self._graph: AssetGraph | None = None
+        self._validate_acyclic = validate_acyclic
 
     def register(self, asset: Asset) -> None:
-        """Register an asset. Extracts refs from SQL automatically."""
+        """Register an asset. Extracts refs from SQL automatically.
+
+        When validate_acyclic is True (default), raises ValueError if the
+        new asset would introduce a dependency cycle.
+        """
+        # Extract refs before mutating so we can validate first
+        refs: list[str] = []
+        if asset.sql:
+            refs = self._ref_resolver.extract_refs(asset.sql)
+            # Filter out self-references to maintain DAG invariant
+            refs = [ref for ref in refs if ref != asset.name]
+
+        # Validate cycle before mutating state
+        if self._validate_acyclic and refs:
+            self._check_for_cycles(asset.name, refs)
+
         # Remove stale dependencies targeting this asset before re-registering
         self._dependencies = [
             d for d in self._dependencies if d.target != asset.name
@@ -32,13 +52,31 @@ class Registry:
         self._assets[asset.name] = asset
         self._graph = None  # invalidate cached graph
         if asset.sql:
-            refs = self._ref_resolver.extract_refs(asset.sql)
-            # Filter out self-references to maintain DAG invariant
-            refs = [ref for ref in refs if ref != asset.name]
             asset.depends_on = refs
             for ref in refs:
                 self._dependencies.append(
                     Dependency(source=ref, target=asset.name, type="ref")
+                )
+
+    def _check_for_cycles(self, asset_name: str, refs: list[str]) -> None:
+        """Check whether adding ref → asset_name edges would create a cycle.
+
+        The proposed dependency is Dependency(source=ref, target=asset_name),
+        which means ref is upstream of asset_name (forward edge ref → asset_name).
+        A cycle exists if ref is already reachable downstream from asset_name.
+        This is O(reachable nodes) per check — much cheaper than rebuilding
+        the full graph for topological sort.
+        """
+        graph = self.graph
+        # Only compute descendants once — all refs are checked against the
+        # same set of downstream nodes from asset_name
+        downstream = graph.descendants(asset_name)
+        for ref in refs:
+            if ref in downstream:
+                raise ValueError(
+                    f"Registering asset '{asset_name}' would create a "
+                    f"dependency cycle: '{asset_name}' already depends on "
+                    f"'{ref}'"
                 )
 
     def get(self, name: str) -> Asset | None:
