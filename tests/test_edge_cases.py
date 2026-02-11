@@ -546,6 +546,26 @@ class TestRegistryEdgeCases:
         with pytest.raises(ValueError, match="self-reference"):
             registry.register(a)
 
+    def test_self_ref_does_not_corrupt_registry(self):
+        """A failed self-referencing register should not mutate registry state."""
+        registry = Registry()
+        registry.register(Asset(
+            name="a", sql="SELECT * FROM {{ ref('b') }}"
+        ))
+        assert len(registry.dependencies) == 1
+        assert registry.get("a") is not None
+
+        # Attempt to re-register 'a' with a self-reference — should fail
+        with pytest.raises(ValueError, match="self-reference"):
+            registry.register(Asset(
+                name="a", sql="SELECT * FROM {{ ref('a') }}"
+            ))
+
+        # Registry should be unchanged — original asset and deps intact
+        assert registry.get("a") is not None
+        assert len(registry.dependencies) == 1
+        assert registry.dependencies[0].source == "b"
+
     def test_registry_len(self):
         registry = Registry()
         assert len(registry) == 0
