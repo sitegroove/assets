@@ -95,3 +95,62 @@ class TestProjectLoader:
         asset = registry.get("staging.users")
         assert asset is not None
         assert asset.depends_on == ["raw.users"]
+
+    def test_warm_cache_uses_cached_fingerprint(self, project_dir: Path):
+        """Warm v2 cache hit uses cached fingerprint (no recomputation)."""
+        registry = Registry()
+        loader = ProjectLoader(
+            registry, cache_dir=str(project_dir / ".cache")
+        )
+        # Cold load — populates cache with v2 entries
+        loader.load(str(project_dir / "models"))
+        cold_fp = registry.get("raw.users").fingerprint  # type: ignore[union-attr]
+
+        # Warm load — should use cached fingerprint
+        registry.clear()
+        loader.load(str(project_dir / "models"))
+        warm_fp = registry.get("raw.users").fingerprint  # type: ignore[union-attr]
+        assert warm_fp == cold_fp
+
+    def test_warm_cache_preserves_refs(self, project_dir: Path):
+        """Warm v2 cache hit preserves refs/depends_on from cache."""
+        (project_dir / "models" / "staging.json").write_text(
+            json.dumps({
+                "name": "staging.users",
+                "kind": "data_model",
+                "sql": "SELECT * FROM {{ ref('raw.users') }}",
+            })
+        )
+        registry = Registry()
+        loader = ProjectLoader(
+            registry, cache_dir=str(project_dir / ".cache")
+        )
+        # Cold load
+        loader.load(str(project_dir / "models"))
+        assert registry.get("staging.users").depends_on == ["raw.users"]  # type: ignore[union-attr]
+
+        # Warm load
+        registry.clear()
+        loader.load(str(project_dir / "models"))
+        assert registry.get("staging.users").depends_on == ["raw.users"]  # type: ignore[union-attr]
+        # Dependencies should also be present in registry
+        deps = [d for d in registry.dependencies if d.target == "staging.users"]
+        assert len(deps) == 1
+        assert deps[0].source == "raw.users"
+
+    def test_warm_load_specific_uses_cache(self, project_dir: Path):
+        """load_specific() also benefits from v2 cache fast path."""
+        registry = Registry()
+        loader = ProjectLoader(
+            registry, cache_dir=str(project_dir / ".cache")
+        )
+        models_dir = project_dir / "models"
+        # Cold load to populate cache
+        loader.load_specific([models_dir / "users.json"], models_dir)
+        cold_fp = registry.get("raw.users").fingerprint  # type: ignore[union-attr]
+
+        # Warm load_specific
+        registry.clear()
+        assets = loader.load_specific([models_dir / "users.json"], models_dir)
+        assert len(assets) == 1
+        assert assets[0].fingerprint == cold_fp

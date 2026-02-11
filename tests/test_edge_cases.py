@@ -1143,7 +1143,8 @@ class TestCompiledCacheEdgeCases:
         data = {"name": "test"}
         cache.put(src, root, data)
         result = cache.get(src, root)
-        assert result == data
+        assert result is not None
+        assert result.data == data
 
     def test_clean_nonexistent_cache_dir(self, tmp_path: Path):
         cache = CompiledCache(cache_dir=str(tmp_path / "nonexistent"))
@@ -1185,14 +1186,16 @@ class TestCompiledCacheEdgeCases:
 
         cache.put(src, root, {"name": "v1"})
         result1 = cache.get(src, root)
-        assert result1 == {"name": "v1"}
+        assert result1 is not None
+        assert result1.data == {"name": "v1"}
 
         # Update source and re-put
         time.sleep(0.01)
         src.write_text('{"name": "v2"}')
         cache.put(src, root, {"name": "v2"})
         result2 = cache.get(src, root)
-        assert result2 == {"name": "v2"}
+        assert result2 is not None
+        assert result2.data == {"name": "v2"}
 
 
 # ===========================================================================

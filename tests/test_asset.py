@@ -94,3 +94,29 @@ class TestAsset:
         assert m.kind == "data_model"
         assert m.tags == ["staging"]
         assert isinstance(m.fingerprint, str)
+
+    def test_cached_fingerprint_bypass(self):
+        """When _cached_fingerprint is set, fingerprint returns it directly."""
+        a = Asset(name="test")
+        real_fp = a.fingerprint
+        a._cached_fingerprint = "cached_value"
+        assert a.fingerprint == "cached_value"
+        # Clear it and we get the real value back
+        a._cached_fingerprint = None
+        assert a.fingerprint == real_fp
+
+    def test_cached_fingerprint_default_none(self):
+        """_cached_fingerprint defaults to None — normal computation occurs."""
+        a = Asset(name="test")
+        assert a._cached_fingerprint is None
+        assert isinstance(a.fingerprint, str)
+        assert len(a.fingerprint) == 64  # SHA-256 hex
+
+    def test_model_construct_with_cached_fingerprint(self):
+        """model_construct + _cached_fingerprint works for fast cache path."""
+        a = Asset.model_construct(name="test", kind="source")
+        a._cached_fingerprint = "fast_fp"
+        assert a.fingerprint == "fast_fp"
+        # model_dump should include the cached fingerprint
+        d = a.model_dump()
+        assert d["fingerprint"] == "fast_fp"

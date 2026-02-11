@@ -6,7 +6,7 @@ import hashlib
 import json
 from typing import Any
 
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, PrivateAttr, computed_field
 
 from assets.core.fields import FIELD_NAME_KEY, FIELD_SOURCE_KEY, FINGERPRINT_KEY
 
@@ -42,10 +42,15 @@ class Asset(BaseModel):
     tags: list[str] = []
     metadata: dict[str, Any] = {}
 
+    # — cache bypass (set by ProjectLoader on warm cache hits) —
+    _cached_fingerprint: str | None = PrivateAttr(default=None)
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def fingerprint(self) -> str:
         """Deterministic SHA-256 hash of fingerprinted fields."""
+        if self._cached_fingerprint is not None:
+            return self._cached_fingerprint
         payload = self._canonical_dict()
         raw = json.dumps(payload, sort_keys=True, default=str)
         return hashlib.sha256(raw.encode()).hexdigest()

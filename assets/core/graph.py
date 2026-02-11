@@ -66,6 +66,8 @@ class AssetGraph:
         """Kahn's algorithm — returns assets in dependency order."""
         in_degree: dict[str, int] = {n: 0 for n in self._assets}
         for src, targets in self._forward.items():
+            if src not in self._assets:
+                continue  # skip edges from unregistered nodes
             for t in targets:
                 if t in in_degree:
                     in_degree[t] += 1

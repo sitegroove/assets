@@ -11,9 +11,12 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from pydantic import BaseModel as PydanticBaseModel
+
 from assets.core.asset import Asset
 from assets.core.registry import Registry
-from assets.loader.compiled import CompiledCache
+from assets.loader.compiled import CompiledCache, CompiledEntry
+from assets.resolver.ref import RefResolver
 
 
 class LoadError(BaseModel):
@@ -70,10 +73,57 @@ class ProjectLoader:
         """
         return sorted(project_dir.rglob("*.json"))
 
+    def _extract_refs(self, asset: Asset) -> list[str]:
+        """Extract refs from an asset's SQL, filtering self-references."""
+        if not asset.sql:
+            return []
+        refs = RefResolver().extract_refs(asset.sql)
+        return [ref for ref in refs if ref != asset.name]
+
+    def _construct_from_cache(self, entry: CompiledEntry) -> Asset:
+        """Build an Asset from a v2 cache entry without full Pydantic validation.
+
+        Uses model_construct() since the data was already validated when
+        first cached. Nested Pydantic models (e.g. Column lists) are
+        constructed recursively to preserve attribute access.
+        Sets _cached_fingerprint to skip SHA-256 recomputation.
+        """
+        data = dict(entry.data)
+        if entry.depends_on is not None:
+            data["depends_on"] = entry.depends_on
+
+        # Construct nested Pydantic models from raw dicts
+        self._construct_nested_fields(self.asset_class, data)
+
+        asset = self.asset_class.model_construct(**data)
+        if entry.fingerprint is not None:
+            asset._cached_fingerprint = entry.fingerprint
+        return asset
+
+    @staticmethod
+    def _construct_nested_fields(cls: type, data: dict[str, Any]) -> None:
+        """Recursively construct nested Pydantic models in field data."""
+        for field_name, field_info in cls.model_fields.items():
+            if field_name not in data:
+                continue
+            annotation = field_info.annotation
+            # Handle list[SomeModel] fields
+            origin = getattr(annotation, "__origin__", None)
+            if origin is list:
+                args = getattr(annotation, "__args__", ())
+                if args and isinstance(args[0], type) and issubclass(args[0], PydanticBaseModel):
+                    inner_cls = args[0]
+                    data[field_name] = [
+                        inner_cls.model_construct(**item) if isinstance(item, dict) else item
+                        for item in data[field_name]
+                    ]
+
     def load(self, project_dir: str) -> LoadResult:
         """Load all asset files, registering assets into registry.
 
-        Uses compiled cache for fast cold starts.
+        Uses compiled cache for fast cold starts. On v2 cache hits,
+        skips Pydantic validation and uses pre-computed fingerprints/refs
+        for much faster warm loads.
         """
         root = Path(project_dir)
         if not root.exists():
@@ -85,13 +135,25 @@ class ProjectLoader:
         recompiled = 0
         errors: list[LoadError] = []
 
+        # Collect assets for bulk registration
+        bulk_assets: list[Asset] = []
+        bulk_refs: list[list[str] | None] = []
+
         for path in files:
             try:
                 # Try compiled cache first
-                cached = self.cache.get(path, root)
-                if cached is not None:
-                    asset = self.asset_class.model_validate(cached)
-                    self.registry.register(asset)
+                entry = self.cache.get(path, root)
+                if entry is not None:
+                    if entry.version >= 2 and entry.fingerprint is not None:
+                        # Fast path: v2 cache — skip validation + recomputation
+                        asset = self._construct_from_cache(entry)
+                        bulk_assets.append(asset)
+                        bulk_refs.append(entry.refs)
+                    else:
+                        # v1 cache — only raw dict available
+                        asset = self.asset_class.model_validate(entry.data)
+                        bulk_assets.append(asset)
+                        bulk_refs.append(None)
                     loaded += 1
                     reused += 1
                     continue
@@ -102,29 +164,69 @@ class ProjectLoader:
                     continue
 
                 asset = self.asset_class.model_validate(data)
-                self.registry.register(asset)
-                self.cache.put(path, root, data)
+                refs = self._extract_refs(asset)
+
+                # Set depends_on before fingerprint so the cached fingerprint
+                # matches what register_bulk() will produce.
+                if refs:
+                    asset.depends_on = refs
+
+                self.cache.put(
+                    path, root, data,
+                    fingerprint=asset.fingerprint,
+                    refs=refs,
+                    depends_on=refs,
+                )
+                bulk_assets.append(asset)
+                bulk_refs.append(refs)
                 loaded += 1
                 recompiled += 1
 
             except Exception as e:
                 errors.append(LoadError(path=str(path), error=str(e)))
 
+        # Bulk register all assets at once (deferred cycle detection)
+        if bulk_assets:
+            self.registry.register_bulk(bulk_assets, bulk_refs)
+
         return LoadResult(loaded=loaded, reused=reused, recompiled=recompiled, errors=errors)
 
     def load_specific(self, paths: list[Path], root: Path) -> list[Asset]:
         """Load only specific files (for optimized plan)."""
         assets: list[Asset] = []
+        bulk_assets: list[Asset] = []
+        bulk_refs: list[list[str] | None] = []
+
         for path in paths:
-            cached = self.cache.get(path, root)
-            if cached is not None:
-                asset = self.asset_class.model_validate(cached)
+            entry = self.cache.get(path, root)
+            if entry is not None:
+                if entry.version >= 2 and entry.fingerprint is not None:
+                    asset = self._construct_from_cache(entry)
+                    bulk_assets.append(asset)
+                    bulk_refs.append(entry.refs)
+                else:
+                    asset = self.asset_class.model_validate(entry.data)
+                    bulk_assets.append(asset)
+                    bulk_refs.append(None)
             else:
                 data = self.parse_file(path, root)
                 if data is None:
                     continue
                 asset = self.asset_class.model_validate(data)
-                self.cache.put(path, root, data)
-            self.registry.register(asset)
+                refs = self._extract_refs(asset)
+                if refs:
+                    asset.depends_on = refs
+                self.cache.put(
+                    path, root, data,
+                    fingerprint=asset.fingerprint,
+                    refs=refs,
+                    depends_on=refs,
+                )
+                bulk_assets.append(asset)
+                bulk_refs.append(refs)
             assets.append(asset)
+
+        if bulk_assets:
+            self.registry.register_bulk(bulk_assets, bulk_refs)
+
         return assets

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from assets import CompiledCache
+from assets.loader.compiled import CompiledEntry
 
 
 @pytest.fixture
@@ -33,7 +34,8 @@ class TestCompiledCache:
         data = {"name": "users", "kind": "model"}
         cache.put(src, tmp_project, data)
         result = cache.get(src, tmp_project)
-        assert result == data
+        assert result is not None
+        assert result.data == data
 
     def test_mtime_fast_path(self, cache: CompiledCache, tmp_project: Path):
         src = tmp_project / "models" / "users.json"
@@ -42,7 +44,8 @@ class TestCompiledCache:
 
         # Same file, same mtime → cache hit
         result = cache.get(src, tmp_project)
-        assert result == data
+        assert result is not None
+        assert result.data == data
 
     def test_content_change_invalidates(self, cache: CompiledCache, tmp_project: Path):
         src = tmp_project / "models" / "users.json"
@@ -67,7 +70,8 @@ class TestCompiledCache:
         src.write_text(original_content)
 
         result = cache.get(src, tmp_project)
-        assert result == data
+        assert result is not None
+        assert result.data == data
 
     def test_corrupted_cache_file(self, cache: CompiledCache, tmp_project: Path):
         src = tmp_project / "models" / "users.json"
@@ -105,3 +109,61 @@ class TestCompiledCache:
         src.unlink()
         result = cache.get(src, tmp_project)
         assert result is None
+
+    # --- v2 cache format tests ---
+
+    def test_v2_entry_roundtrip(self, cache: CompiledCache, tmp_project: Path):
+        """v2 put stores fingerprint/refs/depends_on; get returns them."""
+        src = tmp_project / "models" / "users.json"
+        data = {"name": "users", "kind": "model"}
+        cache.put(
+            src, tmp_project, data,
+            fingerprint="abc123",
+            refs=["raw.users"],
+            depends_on=["raw.users"],
+        )
+        result = cache.get(src, tmp_project)
+        assert result is not None
+        assert result.version == 2
+        assert result.fingerprint == "abc123"
+        assert result.refs == ["raw.users"]
+        assert result.depends_on == ["raw.users"]
+        assert result.data == data
+
+    def test_v1_entry_compat(self, cache: CompiledCache, tmp_project: Path):
+        """Old v1 cache files (no version/fingerprint/refs) load with None defaults."""
+        src = tmp_project / "models" / "users.json"
+        # Manually write a v1-format entry (no version/fingerprint/refs fields)
+        cp = cache._cache_path(src, tmp_project)
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        v1_entry = {
+            "source_path": str(src),
+            "source_mtime": cache._mtime_ns(src),
+            "content_hash": cache._content_hash(src),
+            "data": {"name": "users", "kind": "model"},
+        }
+        cp.write_text(json.dumps(v1_entry))
+
+        result = cache.get(src, tmp_project)
+        assert result is not None
+        assert result.version == 1
+        assert result.fingerprint is None
+        assert result.refs is None
+        assert result.depends_on is None
+        assert result.data == {"name": "users", "kind": "model"}
+
+    def test_get_returns_compiled_entry(self, cache: CompiledCache, tmp_project: Path):
+        """get() returns CompiledEntry, not a raw dict."""
+        src = tmp_project / "models" / "users.json"
+        cache.put(src, tmp_project, {"name": "users"})
+        result = cache.get(src, tmp_project)
+        assert isinstance(result, CompiledEntry)
+
+    def test_v2_put_without_optional_fields(self, cache: CompiledCache, tmp_project: Path):
+        """put() without v2 kwargs still produces a v2 entry (with None fields)."""
+        src = tmp_project / "models" / "users.json"
+        cache.put(src, tmp_project, {"name": "users"})
+        result = cache.get(src, tmp_project)
+        assert result is not None
+        assert result.version == 2
+        assert result.fingerprint is None

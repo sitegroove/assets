@@ -79,6 +79,58 @@ class Registry:
                     f"'{ref}'"
                 )
 
+    def register_bulk(
+        self,
+        assets: list[Asset],
+        precomputed_refs: list[list[str] | None] | None = None,
+    ) -> None:
+        """Register multiple assets with deferred cycle detection.
+
+        Much faster than calling register() in a loop because:
+        - Stale dependency cleanup is a single pass (not per-asset)
+        - Graph is invalidated once (not per-asset)
+        - Cycle detection uses one topological sort (not N BFS traversals)
+
+        Args:
+            assets: Assets to register.
+            precomputed_refs: Parallel list of pre-extracted refs per asset.
+                None entries (or None for the whole list) trigger normal
+                ref extraction from SQL.
+        """
+        # Phase 1: Compute refs for each asset
+        asset_refs: list[tuple[Asset, list[str]]] = []
+        for i, asset in enumerate(assets):
+            refs: list[str] = []
+            if precomputed_refs and precomputed_refs[i] is not None:
+                refs = precomputed_refs[i]  # type: ignore[assignment]
+            elif asset.sql:
+                refs = self._ref_resolver.extract_refs(asset.sql)
+                refs = [ref for ref in refs if ref != asset.name]
+            asset_refs.append((asset, refs))
+
+        # Phase 2: Single-pass stale dependency cleanup
+        registering_names = {asset.name for asset, _ in asset_refs}
+        self._dependencies = [
+            d for d in self._dependencies if d.target not in registering_names
+        ]
+
+        # Phase 3: Store assets and build dependency edges
+        for asset, refs in asset_refs:
+            self._assets[asset.name] = asset
+            if asset.sql:
+                asset.depends_on = refs
+                for ref in refs:
+                    self._dependencies.append(
+                        Dependency(source=ref, target=asset.name, type="ref")
+                    )
+
+        # Phase 4: Invalidate graph once
+        self._graph = None
+
+        # Phase 5: Single cycle detection pass via topological sort
+        if self._validate_acyclic:
+            self.graph.topological_sort()
+
     def get(self, name: str) -> Asset | None:
         return self._assets.get(name)
 
