@@ -19,6 +19,20 @@ from assets.state.local import LocalJSONBackend
 from assets.state.memory import MemoryBackend
 from assets.state.models import AssetState, DependencyState, SourceFileRef, StateSnapshot
 
+# Lazy import for optional dependency
+_FSSPEC_BACKEND_LOADED = False
+
+
+def __getattr__(name: str) -> object:
+    global _FSSPEC_BACKEND_LOADED  # noqa: PLW0603
+    if name == "FsspecBackend" and not _FSSPEC_BACKEND_LOADED:
+        from assets.state.fsspec import FsspecBackend
+
+        _FSSPEC_BACKEND_LOADED = True
+        globals()["FsspecBackend"] = FsspecBackend
+        return FsspecBackend
+    raise AttributeError(f"module 'assets' has no attribute {name!r}")
+
 __all__ = [
     # Core
     "Asset",
@@ -43,6 +57,7 @@ __all__ = [
     "DependencyState",
     "Environment",
     "EnvironmentConfig",
+    "FsspecBackend",
     "LocalJSONBackend",
     "MemoryBackend",
     "SourceFileRef",

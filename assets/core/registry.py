@@ -98,6 +98,12 @@ class Registry:
             mappings.extend(result)
         return mappings
 
+    def __repr__(self) -> str:
+        return f"Registry(assets={len(self._assets)}, dependencies={len(self._dependencies)})"
+
+    def __len__(self) -> int:
+        return len(self._assets)
+
     @property
     def assets(self) -> dict[str, Asset]:
         return self._assets

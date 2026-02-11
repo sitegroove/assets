@@ -11,10 +11,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+s3 = ["fsspec[s3]>=2024.6"]
+gcs = ["fsspec[gcs]>=2024.6"]
+cloud = ["fsspec[s3,gcs]>=2024.6"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.4",
+    "fsspec>=2024.6",
 ]
 
 [build-system]

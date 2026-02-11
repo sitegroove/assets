@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -10,6 +11,8 @@ from pathlib import Path
 
 from assets.state.backend import StateBackend
 from assets.state.models import StateSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 class LocalJSONBackend(StateBackend):
@@ -43,7 +46,11 @@ class LocalJSONBackend(StateBackend):
         try:
             data = json.loads(path.read_text())
             return StateSnapshot.model_validate(data)
+        except json.JSONDecodeError:
+            logger.warning("Corrupted state file at %s, returning None", path)
+            return None
         except Exception:
+            logger.warning("Failed to load state from %s", path, exc_info=True)
             return None
 
     def save(self, environment: str, state: StateSnapshot) -> None:
