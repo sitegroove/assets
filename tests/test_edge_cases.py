@@ -529,42 +529,25 @@ class TestRegistryEdgeCases:
         assert len(result) == 1
         assert result[0].target_field == "user_id"
 
-    def test_register_self_referencing_sql_raises(self):
-        """Self-references in SQL should raise a ValueError."""
+    def test_register_self_referencing_sql_is_filtered(self):
+        """Self-references in SQL are silently filtered to maintain DAG invariant."""
         registry = Registry()
         a = Asset(name="loop", sql="SELECT * FROM {{ ref('loop') }}")
-        with pytest.raises(ValueError, match="self-reference"):
-            registry.register(a)
+        registry.register(a)
+        assert "loop" not in a.depends_on
+        assert len(registry.dependencies) == 0
 
-    def test_self_ref_mixed_with_real_refs_raises(self):
-        """Self-references raise even when mixed with valid refs."""
+    def test_self_ref_mixed_with_real_refs(self):
+        """Self-references are filtered but other refs are preserved."""
         registry = Registry()
         a = Asset(
             name="staging.users",
             sql="SELECT * FROM {{ ref('raw.users') }} JOIN {{ ref('staging.users') }}",
         )
-        with pytest.raises(ValueError, match="self-reference"):
-            registry.register(a)
-
-    def test_self_ref_does_not_corrupt_registry(self):
-        """A failed self-referencing register should not mutate registry state."""
-        registry = Registry()
-        registry.register(Asset(
-            name="a", sql="SELECT * FROM {{ ref('b') }}"
-        ))
+        registry.register(a)
+        assert a.depends_on == ["raw.users"]
         assert len(registry.dependencies) == 1
-        assert registry.get("a") is not None
-
-        # Attempt to re-register 'a' with a self-reference — should fail
-        with pytest.raises(ValueError, match="self-reference"):
-            registry.register(Asset(
-                name="a", sql="SELECT * FROM {{ ref('a') }}"
-            ))
-
-        # Registry should be unchanged — original asset and deps intact
-        assert registry.get("a") is not None
-        assert len(registry.dependencies) == 1
-        assert registry.dependencies[0].source == "b"
+        assert registry.dependencies[0].source == "raw.users"
 
     def test_registry_len(self):
         registry = Registry()

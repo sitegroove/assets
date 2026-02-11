@@ -25,15 +25,6 @@ class Registry:
 
     def register(self, asset: Asset) -> None:
         """Register an asset. Extracts refs from SQL automatically."""
-        # Validate before mutating state so a failed register leaves
-        # the registry unchanged
-        if asset.sql:
-            refs = self._ref_resolver.extract_refs(asset.sql)
-            if asset.name in refs:
-                raise ValueError(
-                    f"Asset '{asset.name}' contains a self-reference in its SQL. "
-                    f"An asset cannot depend on itself."
-                )
         # Remove stale dependencies targeting this asset before re-registering
         self._dependencies = [
             d for d in self._dependencies if d.target != asset.name
@@ -41,6 +32,9 @@ class Registry:
         self._assets[asset.name] = asset
         self._graph = None  # invalidate cached graph
         if asset.sql:
+            refs = self._ref_resolver.extract_refs(asset.sql)
+            # Filter out self-references to maintain DAG invariant
+            refs = [ref for ref in refs if ref != asset.name]
             asset.depends_on = refs
             for ref in refs:
                 self._dependencies.append(
