@@ -133,7 +133,7 @@ class AssetGraph:
         while queue:
             node, depth = queue.popleft()
             for neighbor in edges.get(node, set()):
-                if neighbor not in visited:
+                if neighbor not in visited and neighbor in self._assets:
                     if max_depth is not None and depth + 1 > max_depth:
                         continue
                     visited.add(neighbor)

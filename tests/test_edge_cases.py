@@ -253,15 +253,14 @@ class TestGraphEdgeCases:
     def test_dependency_references_nonexistent_asset(self):
         """Dependencies can reference assets not in the graph.
 
-        Note: _traverse follows edges regardless of whether the neighbor
-        is a registered asset. This means descendants() can return names
-        that aren't in the asset dict — callers should filter if needed.
+        Traversal should only return names of registered assets,
+        filtering out ghost nodes that exist only as edge targets.
         """
         assets = {"a": Asset(name="a")}
         deps = [Dependency(source="a", target="ghost")]
         g = AssetGraph.build(assets, deps)
-        # ghost is returned by traversal even though it's not a registered asset
-        assert g.descendants("a") == {"ghost"}
+        # ghost is NOT returned because it's not a registered asset
+        assert g.descendants("a") == set()
         assert g.roots() == {"a"}
 
     def test_empty_graph_fingerprint(self):
@@ -422,8 +421,8 @@ class TestSelectorEdgeCases:
 
 
 class TestRegistryEdgeCases:
-    def test_re_register_accumulates_dependencies(self):
-        """Re-registering an asset with SQL appends new deps without removing old ones."""
+    def test_re_register_replaces_dependencies(self):
+        """Re-registering an asset with SQL should replace old deps, not accumulate."""
         registry = Registry()
         a = Asset(
             name="staging.users",
@@ -431,6 +430,7 @@ class TestRegistryEdgeCases:
         )
         registry.register(a)
         assert len(registry.dependencies) == 1
+        assert registry.dependencies[0].source == "raw.users"
 
         # Re-register with different SQL
         a2 = Asset(
@@ -438,8 +438,32 @@ class TestRegistryEdgeCases:
             sql="SELECT * FROM {{ ref('raw.payments') }}",
         )
         registry.register(a2)
-        # Old dependency is NOT removed — this is a known behavior
+        # Old dependency is removed, only the new one remains
+        assert len(registry.dependencies) == 1
+        assert registry.dependencies[0].source == "raw.payments"
+        assert registry.dependencies[0].target == "staging.users"
+
+    def test_re_register_preserves_other_asset_dependencies(self):
+        """Re-registering one asset should not remove dependencies of other assets."""
+        registry = Registry()
+        registry.register(Asset(
+            name="a", sql="SELECT * FROM {{ ref('source') }}"
+        ))
+        registry.register(Asset(
+            name="b", sql="SELECT * FROM {{ ref('source') }}"
+        ))
         assert len(registry.dependencies) == 2
+
+        # Re-register 'a' with different SQL
+        registry.register(Asset(
+            name="a", sql="SELECT * FROM {{ ref('other') }}"
+        ))
+        # 'b' dependency should remain, 'a' dependency should be replaced
+        assert len(registry.dependencies) == 2
+        targets = {d.target for d in registry.dependencies}
+        assert targets == {"a", "b"}
+        a_dep = next(d for d in registry.dependencies if d.target == "a")
+        assert a_dep.source == "other"
 
     def test_resolve_column_lineage_missing_asset(self):
         """resolve_column_lineage with non-existent asset returns empty."""
@@ -505,17 +529,27 @@ class TestRegistryEdgeCases:
         assert len(result) == 1
         assert result[0].target_field == "user_id"
 
-    def test_register_self_referencing_sql(self):
-        """An asset whose SQL references itself."""
+    def test_register_self_referencing_sql_is_filtered(self):
+        """Self-references in SQL should be filtered out to maintain DAG invariant."""
         registry = Registry()
         a = Asset(name="loop", sql="SELECT * FROM {{ ref('loop') }}")
         registry.register(a)
-        assert "loop" in a.depends_on
-        # Creates a self-dependency
-        assert any(
-            d.source == "loop" and d.target == "loop"
-            for d in registry.dependencies
+        # Self-reference should be filtered out
+        assert "loop" not in a.depends_on
+        assert len(registry.dependencies) == 0
+
+    def test_self_ref_mixed_with_real_refs(self):
+        """Self-references are filtered but other refs are preserved."""
+        registry = Registry()
+        a = Asset(
+            name="staging.users",
+            sql="SELECT * FROM {{ ref('raw.users') }} JOIN {{ ref('staging.users') }}",
         )
+        registry.register(a)
+        # Only the non-self reference should remain
+        assert a.depends_on == ["raw.users"]
+        assert len(registry.dependencies) == 1
+        assert registry.dependencies[0].source == "raw.users"
 
     def test_registry_len(self):
         registry = Registry()
