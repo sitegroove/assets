@@ -21,6 +21,7 @@ class LoadError(BaseModel):
 
     path: str
     error: str
+    error_type: str = ""
 
 
 class LoadResult(BaseModel):
@@ -77,7 +78,7 @@ class ProjectLoader:
         """
         root = Path(project_dir)
         if not root.exists():
-            return LoadResult(loaded=0, errors=[LoadError(path=project_dir, error="not found")])
+            return LoadResult(loaded=0, errors=[LoadError(path=project_dir, error="not found", error_type="not_found")])
 
         files = self.discover_files(root)
         loaded = 0
@@ -108,7 +109,7 @@ class ProjectLoader:
                 recompiled += 1
 
             except Exception as e:
-                errors.append(LoadError(path=str(path), error=str(e)))
+                errors.append(LoadError(path=str(path), error=str(e), error_type=type(e).__name__))
 
         return LoadResult(loaded=loaded, reused=reused, recompiled=recompiled, errors=errors)
 

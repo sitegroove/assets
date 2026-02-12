@@ -115,8 +115,9 @@ config = EnvironmentConfig(
 )
 manager = StateManager(registry, loader, backend, config)
 
-# Detect changes
+# Detect changes (optionally filter with a selector)
 plan = manager.plan("./models", environment="production")
+plan = manager.plan("./models", environment="production", selector="tag:pii")
 print(plan.show())
 
 # Apply changes
@@ -218,6 +219,24 @@ assets/
 
 Shallow environments store only the assets a developer touched. For everything else, they read from their parent. Deletions are stored as tombstones so they don't fall through to the parent.
 
+### State Backends
+
+| Backend | Use Case | Install |
+|---|---|---|
+| `MemoryBackend` | Tests, ephemeral usage | Built-in |
+| `LocalJSONBackend` | Local development | Built-in |
+| `SQLiteBackend` | Single-file persistent state | Built-in |
+| `FsspecBackend` | Cloud storage (S3, GCS, Azure) | `pip install 'assets[cloud]'` |
+
+```python
+# Cloud backend via URL string
+manager = StateManager.from_dir("./models", backend="s3://my-bucket/state")
+
+# Or instantiate directly
+from assets import FsspecBackend
+backend = FsspecBackend("gcs://my-bucket/state")
+```
+
 ## Extending the Library
 
 ### Custom File Loader (e.g., YAML)
@@ -252,12 +271,12 @@ class YAMLLoader(ProjectLoader):
 from assets import LineageResolver, FieldMapping
 
 class SqlglotLineageResolver(LineageResolver):
-    def resolve(self, sql: str, schema: dict[str, list[str]]) -> list[FieldMapping]:
+    def resolve(self, definition: str, upstream_fields: dict[str, list[str]]) -> list[FieldMapping]:
         import sqlglot
         from sqlglot.lineage import lineage
 
         mappings = []
-        # ... use sqlglot to trace column lineage ...
+        # ... use sqlglot to trace column lineage through the SQL definition ...
         return mappings
 
 # Usage

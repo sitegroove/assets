@@ -105,3 +105,50 @@ class TestDiffer:
         assert actions["new"] == "create"
         assert actions["changed"] == "update"
         assert actions["deleted"] == "delete"
+
+    def test_nested_children_change_detected(self):
+        asset_v1 = Asset(
+            name="test",
+            children=[Asset(name="col1", kind="column")],
+        )
+        asset_v2 = Asset(
+            name="test",
+            children=[
+                Asset(name="col1", kind="column"),
+                Asset(name="col2", kind="column"),
+            ],
+        )
+        current = {
+            "test": AssetState(
+                name="test",
+                fingerprint=asset_v1.fingerprint,
+                data=asset_v1.model_dump(),
+            )
+        }
+        cs = self.differ.diff([asset_v2], current)
+        assert len(cs.asset_changes) == 1
+        assert cs.asset_changes[0].action == "update"
+        fields_changed = {fc.field for fc in cs.asset_changes[0].field_changes}
+        assert "children" in fields_changed
+
+    def test_deeply_nested_change_detected(self):
+        child_v1 = Asset(name="sub", kind="v1")
+        child_v2 = Asset(name="sub", kind="v2")
+        asset_v1 = Asset(
+            name="test",
+            children=[Asset(name="parent", children=[child_v1])],
+        )
+        asset_v2 = Asset(
+            name="test",
+            children=[Asset(name="parent", children=[child_v2])],
+        )
+        current = {
+            "test": AssetState(
+                name="test",
+                fingerprint=asset_v1.fingerprint,
+                data=asset_v1.model_dump(),
+            )
+        }
+        cs = self.differ.diff([asset_v2], current)
+        assert len(cs.asset_changes) == 1
+        assert cs.asset_changes[0].action == "update"

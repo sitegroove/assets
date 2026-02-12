@@ -164,3 +164,26 @@ class TestStateManager:
         # No drift initially
         drift = manager.drift(str(project_dir / "models"), environment="production")
         assert not drift.has_changes
+
+    def test_apply_empty_changeset_is_noop(self, manager: StateManager, project_dir: Path):
+        plan = manager.plan(str(project_dir / "models"), environment="production")
+        manager.apply(plan, environment="production")
+
+        # Second plan has no changes
+        plan2 = manager.plan(str(project_dir / "models"), environment="production")
+        assert not plan2.has_changes
+
+        # Apply should be a noop (no I/O, no lock)
+        result = manager.apply(plan2, environment="production")
+        assert result.applied == 0
+        assert result.created == 0
+
+    def test_create_environment_invalid_parent_raises(self, manager: StateManager):
+        with pytest.raises(ValueError, match="does not exist"):
+            manager.create_environment("pr-123", parent="nonexistent")
+
+    def test_promote_missing_source_env(self, manager: StateManager):
+        # Source env has no state yet — should return empty plan
+        plan = manager.promote(from_env="production", to_env="staging")
+        # production has no state, so promote produces empty plan
+        assert not plan.has_changes

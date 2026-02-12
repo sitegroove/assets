@@ -59,7 +59,7 @@ Asset created → Registry.register()
 | File | Key Types | Purpose |
 |---|---|---|
 | `ref.py` | `RefResolver` | Regex `{{ ref('name') }}` extraction. Runs on every `register()`. ~0.01ms per model |
-| `lineage.py` | `LineageResolver` (ABC) | Abstract base class. Consumers implement `resolve(sql, schema) → list[FieldMapping]` with their own SQL parser (e.g., sqlglot) |
+| `lineage.py` | `LineageResolver` (ABC) | Abstract base class. Consumers implement `resolve(definition, upstream_fields) → list[FieldMapping]` with their own parser (e.g., sqlglot for SQL, custom parsers for other formats) |
 
 **Ref resolution is automatic; lineage resolution is never automatic.**
 
@@ -258,16 +258,22 @@ Override `discover_files()` and `parse_file()` for any format:
 
 ### 3. Lineage Resolvers (`LineageResolver`)
 
-Implement `resolve(sql, schema) → list[FieldMapping]`:
-- sqlglot-based column tracing
-- Custom SQL parser
-- Static analysis
+Implement `resolve(definition, upstream_fields) → list[FieldMapping]`:
+- sqlglot-based SQL column tracing
+- Spark DataFrame lineage parser
+- pandas operation chain analyzer
+- YAML pipeline config resolver
 - External catalog integration
 
 ### 4. State Backends (`StateBackend`)
 
-Implement the 5 abstract methods for any storage:
-- S3 + DynamoDB locking
+Implement the 5 abstract methods for any storage. Built-in backends:
+- `MemoryBackend` — in-memory (testing)
+- `LocalJSONBackend` — local filesystem JSON files
+- `SQLiteBackend` — single SQLite database file
+- `FsspecBackend` — any fsspec-compatible URL (S3, GCS, Azure, etc.)
+
+Custom backends can implement the same interface for:
 - PostgreSQL
 - Redis
 - Git-backed state

@@ -36,6 +36,12 @@ class SQLiteCompiledCache:
             self._conn.close()
             self._conn = None
 
+    def __enter__(self) -> SQLiteCompiledCache:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
     @staticmethod
     def _content_hash(file_path: Path) -> str:
         return hashlib.sha256(file_path.read_bytes()).hexdigest()
