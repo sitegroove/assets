@@ -290,8 +290,19 @@ class StateManager:
         self.backend.delete_environment(name)
         self.env_config.environments.pop(name, None)
 
-    def _resolve_state(self, env: Environment) -> ResolvedState:
+    def _resolve_state(
+        self, env: Environment, _seen: set[str] | None = None
+    ) -> ResolvedState:
         """Walk parent chain, merge state layers. Local overrides parent."""
+        if _seen is None:
+            _seen = set()
+        if env.name in _seen:
+            raise ValueError(
+                f"Circular parent reference detected: '{env.name}' "
+                f"already visited in chain {sorted(_seen)}"
+            )
+        _seen.add(env.name)
+
         state = self.backend.load(env.name)
 
         if not env.shallow or env.parent is None:
@@ -306,7 +317,7 @@ class StateManager:
 
         # Shallow environment — resolve parent first, then overlay
         parent_env = self.env_config.get(env.parent)
-        parent_resolved = self._resolve_state(parent_env)
+        parent_resolved = self._resolve_state(parent_env, _seen)
 
         if state is None:
             return parent_resolved

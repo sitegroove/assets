@@ -80,3 +80,35 @@ class TestFieldMapping:
         assert fm.source_field == "public/users/email"
         assert fm.target_asset == "warehouse"
         assert fm.target_field == "analytics/user_emails/email"
+
+    def test_empty_source_and_target(self):
+        fm = FieldMapping(source="", target="")
+        assert fm.source_asset == ""
+        assert fm.source_field == ""
+        assert fm.target_asset == ""
+        assert fm.target_field == ""
+
+    def test_slash_only_path(self):
+        fm = FieldMapping(source="/", target="/")
+        assert fm.source_asset == ""
+        assert fm.source_field == ""
+        assert fm.target_asset == ""
+        assert fm.target_field == ""
+
+    def test_legacy_constructor_without_fields(self):
+        fm = FieldMapping(source_asset="raw.users", target_asset="staging.users")
+        assert fm.source == "raw.users"
+        assert fm.target == "staging.users"
+        assert fm.source_field == ""
+        assert fm.target_field == ""
+
+    def test_legacy_constructor_empty_string_fields(self):
+        fm = FieldMapping(
+            source_asset="raw.users",
+            source_field="",
+            target_asset="staging.users",
+            target_field="",
+        )
+        # Empty string is falsy, so no field appended
+        assert fm.source == "raw.users"
+        assert fm.target == "staging.users"

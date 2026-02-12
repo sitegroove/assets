@@ -31,7 +31,7 @@ class Registry:
         # Remove old dependencies for this asset to avoid duplication on re-register
         self._dependencies = [d for d in self._dependencies if d.target != asset.name]
         if asset.sql:
-            refs = self._ref_resolver.extract_refs(asset.sql)
+            refs = list(dict.fromkeys(self._ref_resolver.extract_refs(asset.sql)))
             asset.depends_on = refs
             for ref in refs:
                 self._dependencies.append(

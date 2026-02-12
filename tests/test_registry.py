@@ -105,3 +105,24 @@ class TestRegistry:
         a2 = Asset(name="x")  # no SQL
         registry.register(a2)
         assert len(registry.dependencies) == 0
+
+    def test_duplicate_refs_in_sql_deduplicated(self, registry: Registry):
+        a = Asset(
+            name="y",
+            sql="SELECT * FROM {{ ref('x') }} JOIN {{ ref('x') }} ON 1=1",
+        )
+        registry.register(a)
+        assert a.depends_on == ["x"]
+        assert len(registry.dependencies) == 1
+
+    def test_resolve_field_dependency_no_target_raises(self, registry: Registry):
+        import pytest
+        from assets.resolver.lineage import LineageResolver
+        from assets.core.dependency import FieldMapping
+
+        class StubResolver(LineageResolver):
+            def resolve(self, sql, schema):
+                return []
+
+        with pytest.raises(ValueError, match="Provide either"):
+            registry.resolve_field_dependency(resolver=StubResolver())

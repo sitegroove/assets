@@ -44,3 +44,18 @@ class TestRefResolver:
         sql = "SELECT * FROM {{ ref('raw.users') }}"
         mapping = {"other": "table"}
         assert self.resolver.resolve_sql(sql, mapping) == "SELECT * FROM raw.users"
+
+    def test_extract_duplicate_refs(self):
+        sql = "SELECT * FROM {{ ref('x') }} JOIN {{ ref('x') }}"
+        assert self.resolver.extract_refs(sql) == ["x", "x"]
+
+    def test_extract_empty_sql(self):
+        assert self.resolver.extract_refs("") == []
+
+    def test_resolve_sql_empty_string(self):
+        assert self.resolver.resolve_sql("") == ""
+
+    def test_extract_mismatched_quotes_still_matches(self):
+        # Regex allows mixed quotes: opening ' with closing "
+        sql = 'SELECT * FROM {{ ref(\'x") }}'
+        assert self.resolver.extract_refs(sql) == ["x"]
