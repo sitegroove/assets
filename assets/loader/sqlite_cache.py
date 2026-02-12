@@ -119,18 +119,12 @@ class SQLiteCompiledCache:
     ) -> None:
         """Batch-insert multiple compiled entries in a single transaction.
 
+        Uses a generator so only one serialized row is in memory at a time,
+        avoiding large allocations when assets carry big data blobs.
+
         Args:
             entries: list of (source_path, root, data) tuples.
         """
-        rows = [
-            (
-                self._rel_path(src, root),
-                self._mtime_ns(src),
-                self._content_hash(src),
-                json.dumps(data),
-            )
-            for src, root, data in entries
-        ]
         with self.conn:
             self.conn.executemany(
                 """INSERT INTO compiled (path, source_mtime, content_hash, data)
@@ -139,7 +133,15 @@ class SQLiteCompiledCache:
                        source_mtime = excluded.source_mtime,
                        content_hash = excluded.content_hash,
                        data = excluded.data""",
-                rows,
+                (
+                    (
+                        self._rel_path(src, root),
+                        self._mtime_ns(src),
+                        self._content_hash(src),
+                        json.dumps(data),
+                    )
+                    for src, root, data in entries
+                ),
             )
 
     def clean(self, root: Path) -> int:
