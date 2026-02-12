@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class SelectionResult(BaseModel):
     """Result of a selector query."""
 
-    assets: list[Any] = []
+    assets: list[Any] = []  # Typed as Any to avoid circular import; contains Asset instances
     names: set[str] = set()
 
 
@@ -29,6 +29,7 @@ class AssetGraph:
         self._forward: dict[str, set[str]] = defaultdict(set)  # parent → children
         self._backward: dict[str, set[str]] = defaultdict(set)  # child → parents
         self._dependencies: list[Dependency] = []
+        self._fingerprint_cache: str | None = None
 
     @classmethod
     def build(
@@ -97,14 +98,16 @@ class AssetGraph:
 
     @property
     def fingerprint(self) -> str:
-        """Hash of all assets + topology."""
-        parts: list[str] = []
-        for name in sorted(self._assets):
-            parts.append(f"{name}:{self._assets[name].fingerprint}")
-        for dep in sorted(self._dependencies, key=lambda d: (d.source, d.target)):
-            parts.append(f"dep:{dep.source}:{dep.target}:{dep.type}")
-        raw = json.dumps(parts, sort_keys=True)
-        return hashlib.sha256(raw.encode()).hexdigest()
+        """Hash of all assets + topology. Cached after first computation."""
+        if self._fingerprint_cache is None:
+            parts: list[str] = []
+            for name in sorted(self._assets):
+                parts.append(f"{name}:{self._assets[name].fingerprint}")
+            for dep in sorted(self._dependencies, key=lambda d: (d.source, d.target)):
+                parts.append(f"dep:{dep.source}:{dep.target}:{dep.type}")
+            raw = json.dumps(parts, sort_keys=True)
+            self._fingerprint_cache = hashlib.sha256(raw.encode()).hexdigest()
+        return self._fingerprint_cache
 
     @property
     def assets(self) -> dict[str, Asset]:

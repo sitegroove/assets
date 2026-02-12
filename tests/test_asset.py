@@ -148,3 +148,29 @@ class TestAsset:
         c = parent.get_child("email_clean")
         assert c is not None
         assert c.depends_on == ["raw.users/email"]
+
+    def test_invalid_name_type_raises(self):
+        import pytest
+
+        with pytest.raises(Exception):
+            Asset(name=123)  # type: ignore[arg-type]
+
+    def test_very_deep_nesting(self):
+        current = Asset(name="leaf", kind="column")
+        for i in range(9, -1, -1):
+            current = Asset(name=f"level_{i}", children=[current])
+        node = current
+        for i in range(10):
+            assert node is not None
+            assert len(node.children) == 1
+            node = node.children[0]
+        assert node.name == "leaf"
+
+    def test_deep_nesting_round_trip(self):
+        inner = Asset(name="c", kind="column")
+        mid = Asset(name="b", children=[inner])
+        outer = Asset(name="a", children=[mid])
+        dumped = outer.model_dump()
+        restored = Asset.model_validate(dumped)
+        assert restored.children[0].children[0].name == "c"
+        assert restored.fingerprint == outer.fingerprint

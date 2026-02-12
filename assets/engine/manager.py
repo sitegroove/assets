@@ -155,6 +155,8 @@ class StateManager:
     def apply(self, plan: Plan, environment: str | None = None) -> ApplyResult:
         """Apply a plan to state. Acquires lock, writes changes, releases."""
         env_name = environment or plan.environment
+        if not plan.changeset.asset_changes:
+            return ApplyResult(environment=env_name)
         env = self.env_config.get(env_name)
 
         with self.backend.lock(env_name):
@@ -272,6 +274,11 @@ class StateManager:
         shallow: bool = True,
     ) -> Environment:
         """Create a new environment."""
+        if parent not in self.env_config.environments:
+            raise ValueError(
+                f"Parent environment '{parent}' does not exist. "
+                f"Available: {sorted(self.env_config.environments.keys())}"
+            )
         env = Environment(name=name, parent=parent, shallow=shallow)
         self.env_config.environments[name] = env
         return env

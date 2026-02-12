@@ -71,3 +71,37 @@ class TestRegistry:
         registry.register(Asset(name="test", sql="SELECT 1"))
         with pytest.raises(ValueError, match="resolver instance must be provided"):
             registry.resolve_field_dependency(asset_name="test")
+
+    def test_reregister_deduplicates_dependencies(self, registry: Registry):
+        a = Asset(name="staging.users", sql="SELECT * FROM {{ ref('raw.users') }}")
+        registry.register(a)
+        assert len(registry.dependencies) == 1
+        # Re-register same asset — should NOT accumulate duplicates
+        registry.register(a)
+        assert len(registry.dependencies) == 1
+
+    def test_reregister_updates_dependencies(self, registry: Registry):
+        a1 = Asset(
+            name="staging.users",
+            sql="SELECT * FROM {{ ref('raw.users') }}",
+        )
+        registry.register(a1)
+        assert registry.dependencies[0].source == "raw.users"
+
+        # Re-register with different SQL
+        a2 = Asset(
+            name="staging.users",
+            sql="SELECT * FROM {{ ref('raw.orders') }}",
+        )
+        registry.register(a2)
+        assert len(registry.dependencies) == 1
+        assert registry.dependencies[0].source == "raw.orders"
+
+    def test_reregister_no_sql_clears_dependencies(self, registry: Registry):
+        a1 = Asset(name="x", sql="SELECT * FROM {{ ref('y') }}")
+        registry.register(a1)
+        assert len(registry.dependencies) == 1
+
+        a2 = Asset(name="x")  # no SQL
+        registry.register(a2)
+        assert len(registry.dependencies) == 0

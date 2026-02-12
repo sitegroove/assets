@@ -175,3 +175,11 @@ class TestSQLiteCompiledCache:
 
         # users should still be cached
         assert cache.get(src1, tmp_project) == {"name": "users"}
+
+    def test_context_manager(self, tmp_project: Path, tmp_path: Path):
+        src = tmp_project / "models" / "users.json"
+        with SQLiteCompiledCache(db_path=tmp_path / ".cache2" / "compiled.db") as c:
+            c.put(src, tmp_project, {"name": "users"})
+            assert c.get(src, tmp_project) == {"name": "users"}
+        # After exit, connection should be closed
+        assert c._conn is None

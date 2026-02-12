@@ -66,3 +66,20 @@ class TestSelectors:
     def test_tag_no_match(self, populated_registry: Registry):
         result = populated_registry.select("tag:nonexistent")
         assert result.names == set()
+
+    def test_empty_string_returns_empty(self, populated_registry: Registry):
+        result = populated_registry.select("")
+        assert result.names == set()
+        assert result.assets == []
+
+    def test_whitespace_returns_empty(self, populated_registry: Registry):
+        result = populated_registry.select("   ")
+        assert result.names == set()
+
+    def test_nonexistent_asset_in_graph_traversal(self, populated_registry: Registry):
+        result = populated_registry.select("+nonexistent+")
+        assert result.names == set()
+
+    def test_wildcard_no_match(self, populated_registry: Registry):
+        result = populated_registry.select("nonexistent.*")
+        assert result.names == set()

@@ -101,3 +101,33 @@ class TestAssetGraph:
         g = _build_graph({"x": Asset(name="x")}, [])
         assert "x" in g
         assert "y" not in g
+
+    def test_triangle_cycle_detection(self):
+        assets = {
+            "a": Asset(name="a"),
+            "b": Asset(name="b"),
+            "c": Asset(name="c"),
+        }
+        deps = [
+            Dependency(source="a", target="b"),
+            Dependency(source="b", target="c"),
+            Dependency(source="c", target="a"),
+        ]
+        g = _build_graph(assets, deps)
+        with pytest.raises(ValueError, match="Cycle detected"):
+            g.topological_sort()
+
+    def test_self_referential_cycle_detection(self):
+        assets = {"a": Asset(name="a")}
+        deps = [Dependency(source="a", target="a")]
+        g = _build_graph(assets, deps)
+        with pytest.raises(ValueError, match="Cycle detected"):
+            g.topological_sort()
+
+    def test_fingerprint_is_cached(self):
+        assets = {"a": Asset(name="a"), "b": Asset(name="b")}
+        g = _build_graph(assets, [Dependency(source="a", target="b")])
+        fp1 = g.fingerprint
+        fp2 = g.fingerprint
+        assert fp1 == fp2
+        assert fp1 is fp2  # same object — confirms caching

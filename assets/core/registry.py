@@ -9,6 +9,7 @@ from assets.core.graph import AssetGraph, SelectionResult
 
 if TYPE_CHECKING:
     from assets.core.asset import Asset
+    from assets.resolver.lineage import LineageResolver
     from assets.resolver.ref import RefResolver
 
 
@@ -27,6 +28,8 @@ class Registry:
         """Register an asset. Extracts refs from SQL automatically."""
         self._assets[asset.name] = asset
         self._graph = None  # invalidate cached graph
+        # Remove old dependencies for this asset to avoid duplication on re-register
+        self._dependencies = [d for d in self._dependencies if d.target != asset.name]
         if asset.sql:
             refs = self._ref_resolver.extract_refs(asset.sql)
             asset.depends_on = refs
@@ -61,8 +64,7 @@ class Registry:
         self,
         asset_name: str | None = None,
         selector: str | None = None,
-        resolver: object | None = None,
-        force: bool = False,
+        resolver: LineageResolver | None = None,
     ) -> list[FieldMapping]:
         """Resolve field-level dependencies using a consumer-provided resolver.
 
@@ -94,7 +96,7 @@ class Registry:
                 dep_asset = self.get(dep_name)
                 if dep_asset:
                     schema[dep_name] = dep_asset.list_children()
-            result = resolver.resolve(resolved_sql, schema)  # type: ignore[attr-defined]
+            result = resolver.resolve(resolved_sql, schema)
             mappings.extend(result)
         return mappings
 
