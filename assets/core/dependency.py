@@ -24,7 +24,7 @@ class Dependency(BaseModel):
 
 
 class FieldMapping(BaseModel):
-    """Column-level lineage entry (produced by lineage resolvers)."""
+    """Field-level dependency entry (produced by lineage resolvers)."""
 
     source_asset: str
     source_field: str

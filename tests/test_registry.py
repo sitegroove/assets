@@ -65,9 +65,9 @@ class TestRegistry:
         registry.register(a2)
         assert registry.get("test").kind == "v2"  # type: ignore[union-attr]
 
-    def test_resolve_column_lineage_no_resolver_raises(self, registry: Registry):
+    def test_resolve_field_dependency_no_resolver_raises(self, registry: Registry):
         import pytest
 
         registry.register(Asset(name="test", sql="SELECT 1"))
         with pytest.raises(ValueError, match="resolver instance must be provided"):
-            registry.resolve_column_lineage(asset_name="test")
+            registry.resolve_field_dependency(asset_name="test")

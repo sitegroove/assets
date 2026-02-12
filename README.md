@@ -260,7 +260,7 @@ class SqlglotLineageResolver(LineageResolver):
 
 # Usage
 resolver = SqlglotLineageResolver()
-lineage = registry.resolve_column_lineage(
+lineage = registry.resolve_field_dependency(
     asset_name="staging.users",
     resolver=resolver,
 )

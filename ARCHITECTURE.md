@@ -63,7 +63,7 @@ Asset created → Registry.register()
 
 **Ref resolution is automatic; lineage resolution is never automatic.**
 
-The library extracts asset-level dependencies via regex at registration time. Column-level lineage is explicitly requested by the consumer via `registry.resolve_column_lineage()`, passing their own resolver instance.
+The library extracts asset-level dependencies via regex at registration time. Field-level dependency resolution is explicitly requested by the consumer via `registry.resolve_field_dependency()`, passing their own resolver instance.
 
 ### `assets/selector/` — Query Language
 
