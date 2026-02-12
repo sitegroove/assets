@@ -1,4 +1,4 @@
-"""Base Asset model with fingerprinting and field-source introspection."""
+"""Base Asset model with fingerprinting and nested children."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, computed_field
 
-from assets.core.fields import FIELD_NAME_KEY, FIELD_SOURCE_KEY, FINGERPRINT_KEY
+from assets.core.fields import FINGERPRINT_KEY
 
 
 def _serialize_value(val: Any) -> Any:
@@ -25,7 +25,12 @@ def _serialize_value(val: Any) -> Any:
 
 
 class Asset(BaseModel):
-    """Base class for all assets in the registry."""
+    """Base class for all assets in the registry.
+
+    Assets can be nested to any depth via the ``children`` field.
+    Each child is itself an Asset with its own identity, lineage, tags,
+    and metadata — enabling hierarchies like database → schema → table → column.
+    """
 
     # — identity —
     name: str
@@ -41,6 +46,9 @@ class Asset(BaseModel):
     # — classification —
     tags: list[str] = []
     metadata: dict[str, Any] = {}
+
+    # — nested children —
+    children: list[Asset] = []
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -64,33 +72,32 @@ class Asset(BaseModel):
             data[attr_name] = _serialize_value(getattr(self, attr_name))
         return data
 
-    # — Field source introspection —
+    # — Child introspection —
 
-    def get_field(self, field_name: str) -> BaseModel | None:
-        """Look up a child field model by name across all field_source attributes."""
-        for items, name_key in self._field_sources():
-            match = next(
-                (f for f in items if getattr(f, name_key, None) == field_name),
-                None,
-            )
-            if match is not None:
-                return match
-        return None
+    def list_children(self) -> list[str]:
+        """List names of all direct children."""
+        return [child.name for child in self.children]
 
-    def list_fields(self) -> list[str]:
-        """List all field names from all field_source attributes."""
-        result: list[str] = []
-        for items, name_key in self._field_sources():
-            result.extend(getattr(f, name_key) for f in items if hasattr(f, name_key))
-        return result
+    def get_child(self, name: str) -> Asset | None:
+        """Look up a direct child by name."""
+        return next((c for c in self.children if c.name == name), None)
 
-    def _field_sources(self) -> list[tuple[list[Any], str]]:
-        """Discover attributes marked as field_source via AssetField metadata."""
-        sources: list[tuple[list[Any], str]] = []
-        for attr_name, field_info in self.__class__.model_fields.items():
-            extra = field_info.json_schema_extra or {}
-            if isinstance(extra, dict) and extra.get(FIELD_SOURCE_KEY, False):
-                items = getattr(self, attr_name, None) or []
-                name_key = extra.get(FIELD_NAME_KEY, "name")
-                sources.append((items, name_key))
-        return sources
+    def get_child_at(self, path: str) -> Asset | None:
+        """Look up a nested child by slash-separated path.
+
+        Example::
+
+            asset.get_child_at("public/users/email")
+            # navigates: self → child "public" → child "users" → child "email"
+        """
+        parts = path.split("/")
+        current: Asset | None = self
+        for part in parts:
+            if current is None:
+                return None
+            current = current.get_child(part)
+        return current
+
+
+# Resolve the self-referencing forward reference in children: list[Asset]
+Asset.model_rebuild()

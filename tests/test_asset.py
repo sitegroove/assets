@@ -1,18 +1,14 @@
 """Tests for the base Asset model."""
 
-from pydantic import BaseModel
-
 from assets import Asset, AssetField
 
 
-class Column(BaseModel):
-    name: str
+class Column(Asset):
     type: str = ""
     pii: bool = False
 
 
 class DataModel(Asset):
-    columns: list[Column] = AssetField(default_factory=list, field_source=True)
     row_count: int = AssetField(default=0, fingerprint=False)
 
 
@@ -24,6 +20,7 @@ class TestAsset:
         assert a.depends_on == []
         assert a.tags == []
         assert a.sql is None
+        assert a.children == []
 
     def test_fingerprint_deterministic(self):
         a1 = Asset(name="test", kind="source")
@@ -40,9 +37,9 @@ class TestAsset:
         m2 = DataModel(name="test", row_count=999)
         assert m1.fingerprint == m2.fingerprint
 
-    def test_fingerprint_includes_fingerprinted(self):
-        m1 = DataModel(name="test", columns=[Column(name="id")])
-        m2 = DataModel(name="test", columns=[Column(name="id"), Column(name="email")])
+    def test_fingerprint_includes_children(self):
+        m1 = Asset(name="test", children=[Asset(name="id")])
+        m2 = Asset(name="test", children=[Asset(name="id"), Asset(name="email")])
         assert m1.fingerprint != m2.fingerprint
 
     def test_canonical_dict_excludes_fingerprint(self):
@@ -55,33 +52,64 @@ class TestAsset:
         d = m._canonical_dict()
         assert "row_count" not in d
 
-    def test_list_fields_empty(self):
+    def test_list_children_empty(self):
         a = Asset(name="test")
-        assert a.list_fields() == []
+        assert a.list_children() == []
 
-    def test_list_fields_with_columns(self):
-        m = DataModel(
+    def test_list_children_with_children(self):
+        m = Asset(
             name="test",
-            columns=[Column(name="id"), Column(name="email")],
+            children=[Column(name="id"), Column(name="email")],
         )
-        assert m.list_fields() == ["id", "email"]
+        assert m.list_children() == ["id", "email"]
 
-    def test_get_field_found(self):
-        m = DataModel(
+    def test_get_child_found(self):
+        m = Asset(
             name="test",
-            columns=[Column(name="id", type="INT"), Column(name="email", type="VARCHAR")],
+            children=[
+                Column(name="id", type="INT"),
+                Column(name="email", type="VARCHAR"),
+            ],
         )
-        f = m.get_field("email")
-        assert f is not None
-        assert f.type == "VARCHAR"  # type: ignore[attr-defined]
+        c = m.get_child("email")
+        assert c is not None
+        assert c.type == "VARCHAR"  # type: ignore[attr-defined]
 
-    def test_get_field_not_found(self):
-        m = DataModel(name="test", columns=[Column(name="id")])
-        assert m.get_field("missing") is None
+    def test_get_child_not_found(self):
+        m = Asset(name="test", children=[Asset(name="id")])
+        assert m.get_child("missing") is None
 
-    def test_get_field_on_base_asset(self):
+    def test_get_child_on_base_asset(self):
         a = Asset(name="test")
-        assert a.get_field("anything") is None
+        assert a.get_child("anything") is None
+
+    def test_get_child_at_deep_path(self):
+        a = Asset(
+            name="database",
+            children=[
+                Asset(
+                    name="public",
+                    children=[
+                        Asset(
+                            name="users",
+                            children=[Asset(name="email", kind="column")],
+                        )
+                    ],
+                )
+            ],
+        )
+        found = a.get_child_at("public/users/email")
+        assert found is not None
+        assert found.name == "email"
+        assert found.kind == "column"
+
+    def test_get_child_at_single_level(self):
+        a = Asset(name="table", children=[Asset(name="col1")])
+        assert a.get_child_at("col1") is not None
+
+    def test_get_child_at_not_found(self):
+        a = Asset(name="table", children=[Asset(name="col1")])
+        assert a.get_child_at("col1/subfield") is None
 
     def test_model_dump_includes_fingerprint(self):
         a = Asset(name="test")
@@ -89,8 +117,34 @@ class TestAsset:
         assert "fingerprint" in d
         assert d["fingerprint"] == a.fingerprint
 
+    def test_model_dump_includes_children(self):
+        a = Asset(name="test", children=[Asset(name="child1")])
+        d = a.model_dump()
+        assert "children" in d
+        assert len(d["children"]) == 1
+        assert d["children"][0]["name"] == "child1"
+
+    def test_model_validate_round_trip(self):
+        original = Asset(
+            name="test",
+            children=[Asset(name="c1", kind="column", children=[Asset(name="sub")])],
+        )
+        dumped = original.model_dump()
+        restored = Asset.model_validate(dumped)
+        assert restored.name == original.name
+        assert restored.children[0].name == "c1"
+        assert restored.children[0].children[0].name == "sub"
+        assert restored.fingerprint == original.fingerprint
+
     def test_subclass_preserves_base_fields(self):
         m = DataModel(name="test", kind="data_model", tags=["staging"])
         assert m.kind == "data_model"
         assert m.tags == ["staging"]
         assert isinstance(m.fingerprint, str)
+
+    def test_children_with_lineage(self):
+        child = Asset(name="email_clean", depends_on=["raw.users/email"])
+        parent = Asset(name="staging.users", children=[child])
+        c = parent.get_child("email_clean")
+        assert c is not None
+        assert c.depends_on == ["raw.users/email"]

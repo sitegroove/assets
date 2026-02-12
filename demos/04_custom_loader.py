@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel
 
 from assets import (
     Asset,
@@ -31,15 +30,8 @@ from assets import (
 # 1. Define asset types
 # ──────────────────────────────────────────────────────────────
 
-class Column(BaseModel):
-    name: str
-    type: str = ""
-    description: str = ""
-    pii: bool = False
-
-
 class DataModel(Asset):
-    columns: list[Column] = AssetField(default_factory=list, field_source=True)
+    pass
 
 
 # ──────────────────────────────────────────────────────────────
@@ -99,10 +91,10 @@ print(f"Project directory: {tmpdir}\n")
     "name": "raw.users",
     "kind": "source",
     "tags": ["raw", "pii"],
-    "columns": [
-        {"name": "user_id", "type": "INTEGER"},
-        {"name": "email", "type": "VARCHAR", "pii": True},
-        {"name": "created_at", "type": "TIMESTAMP"},
+    "children": [
+        {"name": "user_id", "kind": "column"},
+        {"name": "email", "kind": "column"},
+        {"name": "created_at", "kind": "column"},
     ],
 }))
 
@@ -111,10 +103,10 @@ print(f"Project directory: {tmpdir}\n")
     "name": "raw.products",
     "kind": "source",
     "tags": ["raw"],
-    "columns": [
-        {"name": "product_id", "type": "INTEGER"},
-        {"name": "name", "type": "VARCHAR"},
-        {"name": "price", "type": "DECIMAL"},
+    "children": [
+        {"name": "product_id", "kind": "column"},
+        {"name": "name", "kind": "column"},
+        {"name": "price", "kind": "column"},
     ],
 }))
 
@@ -124,11 +116,10 @@ print(f"Project directory: {tmpdir}\n")
     "kind": "data_model",
     "description": "Cleaned and validated user data",
     "tags": ["staging", "pii"],
-    "columns": [
-        {"name": "user_id", "type": "INTEGER"},
-        {"name": "email_clean", "type": "VARCHAR", "pii": True,
-         "description": "Lowercased, trimmed email"},
-        {"name": "created_at", "type": "TIMESTAMP"},
+    "children": [
+        {"name": "user_id", "kind": "column"},
+        {"name": "email_clean", "kind": "column", "description": "Lowercased, trimmed email"},
+        {"name": "created_at", "kind": "column"},
     ],
 }))
 
@@ -147,10 +138,10 @@ WHERE u.email IS NOT NULL
     "name": "mart.catalog",
     "kind": "data_model",
     "tags": ["mart"],
-    "columns": [
-        {"name": "product_id", "type": "INTEGER"},
-        {"name": "name", "type": "VARCHAR"},
-        {"name": "price", "type": "DECIMAL"},
+    "children": [
+        {"name": "product_id", "kind": "column"},
+        {"name": "name", "kind": "column"},
+        {"name": "price", "kind": "column"},
     ],
 }))
 
@@ -207,7 +198,7 @@ print(f"Leaves: {graph.leaves()}")
 # Check that SQL was merged from companion files
 staging_users = registry.get("staging.users")
 print(f"\nstaging.users SQL loaded: {'LOWER(TRIM' in staging_users.sql}")
-print(f"staging.users fields: {staging_users.list_fields()}")
+print(f"staging.users children: {staging_users.list_children()}")
 
 # ──────────────────────────────────────────────────────────────
 # 7. Plan/Apply with the custom loader

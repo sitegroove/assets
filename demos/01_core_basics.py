@@ -4,25 +4,21 @@
 Run: python demos/01_core_basics.py
 """
 
-from pydantic import BaseModel
-
 from assets import Asset, AssetField, Registry
 
 # ──────────────────────────────────────────────────────────────
 # 1. Define a custom asset type
 # ──────────────────────────────────────────────────────────────
 
-class Column(BaseModel):
-    name: str
+class Column(Asset):
     type: str = ""
     description: str = ""
     pii: bool = False
 
 
 class DataModel(Asset):
-    """A data model with typed columns and a non-fingerprinted row_count."""
+    """A data model with a non-fingerprinted row_count."""
 
-    columns: list[Column] = AssetField(default_factory=list, field_source=True)
     row_count: int = AssetField(default=0, fingerprint=False)
 
 
@@ -37,7 +33,7 @@ registry.register(DataModel(
     name="raw.users",
     kind="source",
     tags=["raw", "pii"],
-    columns=[
+    children=[
         Column(name="user_id", type="INTEGER"),
         Column(name="email", type="VARCHAR", pii=True),
         Column(name="created_at", type="TIMESTAMP"),
@@ -48,7 +44,7 @@ registry.register(DataModel(
     name="raw.payments",
     kind="source",
     tags=["raw", "finance"],
-    columns=[
+    children=[
         Column(name="payment_id", type="INTEGER"),
         Column(name="user_id", type="INTEGER"),
         Column(name="amount", type="DECIMAL"),
@@ -65,7 +61,7 @@ registry.register(DataModel(
         "FROM {{ ref('raw.users') }} u "
         "WHERE u.created_at IS NOT NULL"
     ),
-    columns=[
+    children=[
         Column(name="user_id", type="INTEGER"),
         Column(name="email_clean", type="VARCHAR", description="Lowercased, trimmed", pii=True),
         Column(name="created_at", type="TIMESTAMP"),
@@ -83,7 +79,7 @@ registry.register(DataModel(
         "JOIN {{ ref('raw.payments') }} p ON u.user_id = p.user_id "
         "GROUP BY u.user_id, u.email_clean"
     ),
-    columns=[
+    children=[
         Column(name="user_id", type="INTEGER"),
         Column(name="email_clean", type="VARCHAR"),
         Column(name="total_spent", type="DECIMAL"),
@@ -183,21 +179,21 @@ intersect = registry.select("tag:pii,kind:data_model")
 print(f"tag:pii,kind:data_model (AND) -> {intersect.names}")
 
 # ──────────────────────────────────────────────────────────────
-# 7. Field introspection
+# 7. Nested asset introspection
 # ──────────────────────────────────────────────────────────────
 
-print("\n=== Field Introspection ===\n")
+print("\n=== Nested Asset Introspection ===\n")
 
 staging = registry.get("staging.users")
-print(f"staging.users fields: {staging.list_fields()}")
+print(f"staging.users children: {staging.list_children()}")
 
-email_col = staging.get_field("email_clean")
+email_col = staging.get_child("email_clean")
 print(f"  email_clean.type: {email_col.type}")
 print(f"  email_clean.pii: {email_col.pii}")
 print(f"  email_clean.description: {email_col.description}")
 
-# Field not found
-missing = staging.get_field("nonexistent")
-print(f"  get_field('nonexistent'): {missing}")
+# Child not found
+missing = staging.get_child("nonexistent")
+print(f"  get_child('nonexistent'): {missing}")
 
 print("\nDone!")

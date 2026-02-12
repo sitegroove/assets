@@ -12,11 +12,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pydantic import BaseModel
-
 from assets import (
     Asset,
-    AssetField,
     Environment,
     EnvironmentConfig,
     MemoryBackend,
@@ -26,13 +23,8 @@ from assets import (
 )
 
 
-class Column(BaseModel):
-    name: str
-    type: str = ""
-
-
 class DataModel(Asset):
-    columns: list[Column] = AssetField(default_factory=list, field_source=True)
+    pass
 
 
 # ──────────────────────────────────────────────────────────────
@@ -45,16 +37,16 @@ models_dir.mkdir()
 
 (models_dir / "users.json").write_text(json.dumps({
     "name": "raw.users", "kind": "source", "tags": ["raw"],
-    "columns": [{"name": "user_id", "type": "INT"}, {"name": "email", "type": "VARCHAR"}],
+    "children": [{"name": "user_id", "kind": "column"}, {"name": "email", "kind": "column"}],
 }))
 (models_dir / "orders.json").write_text(json.dumps({
     "name": "raw.orders", "kind": "source", "tags": ["raw"],
-    "columns": [{"name": "order_id", "type": "INT"}, {"name": "amount", "type": "DECIMAL"}],
+    "children": [{"name": "order_id", "kind": "column"}, {"name": "amount", "kind": "column"}],
 }))
 (models_dir / "staging_users.json").write_text(json.dumps({
     "name": "staging.users", "kind": "data_model", "tags": ["staging"],
     "sql": "SELECT * FROM {{ ref('raw.users') }}",
-    "columns": [{"name": "user_id", "type": "INT"}, {"name": "email", "type": "VARCHAR"}],
+    "children": [{"name": "user_id", "kind": "column"}, {"name": "email", "kind": "column"}],
 }))
 
 # ──────────────────────────────────────────────────────────────
@@ -115,10 +107,10 @@ print("\n=== Dev: Modify staging.users ===\n")
     "description": "Alice's improved staging users",
     "tags": ["staging", "improved"],
     "sql": "SELECT * FROM {{ ref('raw.users') }} WHERE email IS NOT NULL",
-    "columns": [
-        {"name": "user_id", "type": "INT"},
-        {"name": "email", "type": "VARCHAR"},
-        {"name": "is_valid", "type": "BOOLEAN"},
+    "children": [
+        {"name": "user_id", "kind": "column"},
+        {"name": "email", "kind": "column"},
+        {"name": "is_valid", "kind": "column"},
     ],
 }))
 
@@ -138,7 +130,7 @@ print("\n=== Production Still Clean ===\n")
 (models_dir / "staging_users.json").write_text(json.dumps({
     "name": "staging.users", "kind": "data_model", "tags": ["staging"],
     "sql": "SELECT * FROM {{ ref('raw.users') }}",
-    "columns": [{"name": "user_id", "type": "INT"}, {"name": "email", "type": "VARCHAR"}],
+    "children": [{"name": "user_id", "kind": "column"}, {"name": "email", "kind": "column"}],
 }))
 
 prod_plan = manager.plan(str(models_dir), environment="production")

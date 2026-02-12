@@ -29,19 +29,19 @@ pip install -e ".[dev]"
 ### 1. Define Your Asset Types
 
 ```python
-from pydantic import BaseModel
 from assets import Asset, AssetField
 
-class Column(BaseModel):
-    name: str
+class Column(Asset):
     type: str = ""
     description: str = ""
     pii: bool = False
 
 class DataModel(Asset):
-    columns: list[Column] = AssetField(default_factory=list, field_source=True)
     row_count: int = AssetField(default=0, fingerprint=False)  # excluded from fingerprint
 ```
+
+Assets can be nested to any depth via the `children` field. Each child is itself
+an `Asset` with its own identity, lineage, tags, and metadata.
 
 ### 2. Register Assets
 
@@ -55,7 +55,7 @@ registry.register(DataModel(
     name="raw.users",
     kind="source",
     tags=["raw"],
-    columns=[
+    children=[
         Column(name="user_id", type="INTEGER"),
         Column(name="email", type="VARCHAR", pii=True),
     ],
@@ -67,7 +67,7 @@ registry.register(DataModel(
     kind="data_model",
     tags=["staging", "pii"],
     sql="SELECT u.user_id, LOWER(TRIM(u.email)) AS email_clean FROM {{ ref('raw.users') }} u",
-    columns=[
+    children=[
         Column(name="user_id", type="INTEGER"),
         Column(name="email_clean", type="VARCHAR", pii=True),
     ],
@@ -128,13 +128,17 @@ promote_plan = manager.promote(from_env="production", to_env="staging")
 manager.apply(promote_plan, environment="staging")
 ```
 
-### 5. Field Introspection
+### 5. Nested Asset Introspection
 
 ```python
 asset = registry.get("staging.users")
-asset.list_fields()          # ["user_id", "email_clean"]
-col = asset.get_field("email_clean")
+asset.list_children()        # ["user_id", "email_clean"]
+col = asset.get_child("email_clean")
 col.pii                      # True
+
+# Deep path-based lookups for deeply nested assets
+db = Asset(name="db", children=[Asset(name="public", children=[Asset(name="users")])])
+db.get_child_at("public/users")  # Asset(name="users")
 ```
 
 ## Architecture
@@ -144,9 +148,9 @@ col.pii                      # True
 ```
 assets/
 ├── core/
-│   ├── fields.py         # AssetField() metadata wrapper
-│   ├── asset.py          # Base Asset model + fingerprinting
-│   ├── dependency.py     # Dependency + FieldMapping models
+│   ├── fields.py         # AssetField() fingerprint metadata wrapper
+│   ├── asset.py          # Base Asset model + fingerprinting + nested children
+│   ├── dependency.py     # Dependency + FieldMapping (path-based lineage)
 │   ├── graph.py          # AssetGraph (DAG, traversal, selectors)
 │   └── registry.py       # Registry (central store)
 ├── loader/
@@ -183,13 +187,11 @@ assets/
 
 `AssetField()` wraps Pydantic's `Field()` with additional metadata:
 
-| Declaration | Fingerprinted | Field Source |
-|---|---|---|
-| `AssetField()` | Yes | No |
-| `AssetField(field_source=True)` | Yes | Yes |
-| `AssetField(fingerprint=False)` | No | No |
-| `AssetField(fingerprint=False, field_source=True)` | No | Yes |
-| Plain `Field()` or bare attribute | Yes | No |
+| Declaration | Fingerprinted |
+|---|---|
+| `AssetField()` | Yes |
+| `AssetField(fingerprint=False)` | No |
+| Plain `Field()` or bare attribute | Yes |
 
 ### Selector Syntax
 

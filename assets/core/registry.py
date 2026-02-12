@@ -93,7 +93,7 @@ class Registry:
             for dep_name in asset.depends_on:
                 dep_asset = self.get(dep_name)
                 if dep_asset:
-                    schema[dep_name] = dep_asset.list_fields()
+                    schema[dep_name] = dep_asset.list_children()
             result = resolver.resolve(resolved_sql, schema)  # type: ignore[attr-defined]
             mappings.extend(result)
         return mappings
