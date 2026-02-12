@@ -10,6 +10,7 @@ from assets.engine.manager import ApplyResult, StateManager
 from assets.engine.planner import Plan
 from assets.loader.compiled import CompiledCache
 from assets.loader.project import LoadError, LoadResult, ProjectLoader
+from assets.loader.sqlite_cache import SQLiteCompiledCache
 from assets.resolver.lineage import LineageResolver
 from assets.resolver.ref import RefResolver
 from assets.selector.parser import SelectorParser
@@ -18,6 +19,7 @@ from assets.state.environment import Environment, EnvironmentConfig
 from assets.state.local import LocalJSONBackend
 from assets.state.memory import MemoryBackend
 from assets.state.models import AssetState, DependencyState, SourceFileRef, StateSnapshot
+from assets.state.sqlite import SQLiteBackend
 
 # Lazy import for optional dependency
 _FSSPEC_BACKEND_LOADED = False
@@ -52,6 +54,7 @@ __all__ = [
     "LoadError",
     "LoadResult",
     "ProjectLoader",
+    "SQLiteCompiledCache",
     # State
     "AssetState",
     "DependencyState",
@@ -60,6 +63,7 @@ __all__ = [
     "FsspecBackend",
     "LocalJSONBackend",
     "MemoryBackend",
+    "SQLiteBackend",
     "SourceFileRef",
     "StateBackend",
     "StateSnapshot",
