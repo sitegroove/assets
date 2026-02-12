@@ -68,3 +68,28 @@ class TestPlan:
         plan = Plan(changeset=cs, environment="dev")
         output = plan.show()
         assert "3 change(s)" in output
+
+    def test_show_update_with_no_field_changes(self):
+        cs = ChangeSet(
+            asset_changes=[
+                Change(action="update", asset_name="test", field_changes=[]),
+            ]
+        )
+        plan = Plan(changeset=cs, environment="dev")
+        output = plan.show()
+        assert "~ test" in output
+        assert "1 to update" in output
+
+    def test_repr(self):
+        plan = Plan(environment="dev")
+        assert "dev" in repr(plan)
+        assert "changes=0" in repr(plan)
+
+    def test_has_changes_with_dependency_changes_only(self):
+        cs = ChangeSet(
+            dependency_changes=[
+                Change(action="create", asset_name="dep_a_b"),
+            ]
+        )
+        plan = Plan(changeset=cs, environment="dev")
+        assert plan.has_changes

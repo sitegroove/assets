@@ -187,3 +187,25 @@ class TestStateManager:
         plan = manager.promote(from_env="production", to_env="staging")
         # production has no state, so promote produces empty plan
         assert not plan.has_changes
+
+    def test_circular_parent_env_raises(self):
+        from assets import (
+            Environment, EnvironmentConfig, MemoryBackend,
+            ProjectLoader, Registry, StateManager,
+        )
+
+        config = EnvironmentConfig(
+            default="a",
+            environments={
+                "a": Environment(name="a", parent="b", shallow=True),
+                "b": Environment(name="b", parent="a", shallow=True),
+            },
+        )
+        mgr = StateManager(
+            Registry(),
+            ProjectLoader(Registry()),
+            MemoryBackend(),
+            config,
+        )
+        with pytest.raises(ValueError, match="Circular parent reference"):
+            mgr._resolve_state(config.environments["a"])

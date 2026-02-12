@@ -174,3 +174,32 @@ class TestAsset:
         restored = Asset.model_validate(dumped)
         assert restored.children[0].children[0].name == "c"
         assert restored.fingerprint == outer.fingerprint
+
+    def test_get_child_at_empty_string(self):
+        a = Asset(name="test", children=[Asset(name="child")])
+        assert a.get_child_at("") is None
+
+    def test_get_child_at_slash_only(self):
+        a = Asset(name="test", children=[Asset(name="child")])
+        assert a.get_child_at("/") is None
+
+    def test_get_child_at_trailing_slash(self):
+        a = Asset(
+            name="test",
+            children=[Asset(name="child", children=[Asset(name="leaf")])],
+        )
+        # "child/" splits to ["child", ""] — second part won't match
+        assert a.get_child_at("child/") is None
+        # But without trailing slash it works
+        assert a.get_child_at("child") is not None
+
+    def test_fingerprint_stable_across_calls(self):
+        a = Asset(name="test", kind="model", tags=["a", "b"])
+        fp1 = a.fingerprint
+        fp2 = a.fingerprint
+        assert fp1 == fp2
+
+    def test_empty_children_list_fingerprint(self):
+        a1 = Asset(name="test")
+        a2 = Asset(name="test", children=[])
+        assert a1.fingerprint == a2.fingerprint

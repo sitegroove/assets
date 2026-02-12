@@ -131,3 +131,24 @@ class TestAssetGraph:
         fp2 = g.fingerprint
         assert fp1 == fp2
         assert fp1 is fp2  # same object — confirms caching
+
+    def test_ancestors_nonexistent_node(self):
+        g = _build_graph({"a": Asset(name="a")}, [])
+        assert g.ancestors("nonexistent") == set()
+
+    def test_descendants_nonexistent_node(self):
+        g = _build_graph({"a": Asset(name="a")}, [])
+        assert g.descendants("nonexistent") == set()
+
+    def test_orphaned_dependency_ignored(self):
+        # Dependency referencing asset not in graph
+        assets = {"a": Asset(name="a")}
+        deps = [Dependency(source="a", target="missing")]
+        g = _build_graph(assets, deps)
+        order = g.topological_sort()
+        assert order == ["a"]
+
+    def test_roots_and_leaves_single_node(self):
+        g = _build_graph({"a": Asset(name="a")}, [])
+        assert g.roots() == {"a"}
+        assert g.leaves() == {"a"}
