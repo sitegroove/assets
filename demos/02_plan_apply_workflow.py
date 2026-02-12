@@ -12,8 +12,6 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pydantic import BaseModel
-
 from assets import (
     Asset,
     AssetField,
@@ -29,14 +27,8 @@ from assets import (
 # 1. Define asset types
 # ──────────────────────────────────────────────────────────────
 
-class Column(BaseModel):
-    name: str
-    type: str = ""
-    pii: bool = False
-
-
 class DataModel(Asset):
-    columns: list[Column] = AssetField(default_factory=list, field_source=True)
+    pass
 
 
 # ──────────────────────────────────────────────────────────────
@@ -54,9 +46,9 @@ print(f"Project directory: {tmpdir}\n")
     "name": "raw.users",
     "kind": "source",
     "tags": ["raw"],
-    "columns": [
-        {"name": "user_id", "type": "INTEGER"},
-        {"name": "email", "type": "VARCHAR", "pii": True},
+    "children": [
+        {"name": "user_id", "kind": "column"},
+        {"name": "email", "kind": "column"},
     ],
 }))
 
@@ -64,10 +56,10 @@ print(f"Project directory: {tmpdir}\n")
     "name": "raw.orders",
     "kind": "source",
     "tags": ["raw"],
-    "columns": [
-        {"name": "order_id", "type": "INTEGER"},
-        {"name": "user_id", "type": "INTEGER"},
-        {"name": "total", "type": "DECIMAL"},
+    "children": [
+        {"name": "order_id", "kind": "column"},
+        {"name": "user_id", "kind": "column"},
+        {"name": "total", "kind": "column"},
     ],
 }))
 
@@ -76,9 +68,9 @@ print(f"Project directory: {tmpdir}\n")
     "kind": "data_model",
     "tags": ["staging"],
     "sql": "SELECT * FROM {{ ref('raw.users') }}",
-    "columns": [
-        {"name": "user_id", "type": "INTEGER"},
-        {"name": "email", "type": "VARCHAR"},
+    "children": [
+        {"name": "user_id", "kind": "column"},
+        {"name": "email", "kind": "column"},
     ],
 }))
 
@@ -138,9 +130,9 @@ print("  - Updating staging.users (adding description)")
     "description": "Cleaned user data from raw source",
     "tags": ["staging"],
     "sql": "SELECT * FROM {{ ref('raw.users') }}",
-    "columns": [
-        {"name": "user_id", "type": "INTEGER"},
-        {"name": "email", "type": "VARCHAR"},
+    "children": [
+        {"name": "user_id", "kind": "column"},
+        {"name": "email", "kind": "column"},
     ],
 }))
 
@@ -155,10 +147,10 @@ print("  - Creating mart.user_orders")
         "FROM {{ ref('staging.users') }} u "
         "JOIN {{ ref('raw.orders') }} o ON u.user_id = o.user_id"
     ),
-    "columns": [
-        {"name": "user_id", "type": "INTEGER"},
-        {"name": "email", "type": "VARCHAR"},
-        {"name": "total", "type": "DECIMAL"},
+    "children": [
+        {"name": "user_id", "kind": "column"},
+        {"name": "email", "kind": "column"},
+        {"name": "total", "kind": "column"},
     ],
 }))
 

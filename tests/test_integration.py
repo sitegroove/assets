@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
 
 from assets import (
     Asset,
@@ -18,15 +17,7 @@ from assets import (
 )
 
 
-class Column(BaseModel):
-    name: str
-    type: str = ""
-    description: str = ""
-    pii: bool = False
-
-
 class DataModel(Asset):
-    columns: list[Column] = AssetField(default_factory=list, field_source=True)
     row_count: int = AssetField(default=0, fingerprint=False)
 
 
@@ -40,9 +31,9 @@ def full_project(tmp_path: Path) -> Path:
             "name": "raw.users",
             "kind": "source",
             "tags": ["raw"],
-            "columns": [
-                {"name": "user_id", "type": "INTEGER"},
-                {"name": "email", "type": "VARCHAR", "pii": True},
+            "children": [
+                {"name": "user_id", "kind": "column"},
+                {"name": "email", "kind": "column"},
             ],
         })
     )
@@ -52,10 +43,10 @@ def full_project(tmp_path: Path) -> Path:
             "name": "raw.payments",
             "kind": "source",
             "tags": ["raw"],
-            "columns": [
-                {"name": "payment_id", "type": "INTEGER"},
-                {"name": "user_id", "type": "INTEGER"},
-                {"name": "amount", "type": "DECIMAL"},
+            "children": [
+                {"name": "payment_id", "kind": "column"},
+                {"name": "user_id", "kind": "column"},
+                {"name": "amount", "kind": "column"},
             ],
         })
     )
@@ -69,9 +60,9 @@ def full_project(tmp_path: Path) -> Path:
                 "SELECT u.user_id, LOWER(TRIM(u.email)) AS email_clean"
                 " FROM {{ ref('raw.users') }} u"
             ),
-            "columns": [
-                {"name": "user_id", "type": "INTEGER"},
-                {"name": "email_clean", "type": "VARCHAR", "pii": True},
+            "children": [
+                {"name": "user_id", "kind": "column"},
+                {"name": "email_clean", "kind": "column"},
             ],
         })
     )
@@ -85,10 +76,10 @@ def full_project(tmp_path: Path) -> Path:
                 "SELECT u.*, p.amount FROM {{ ref('staging.users') }} u"
                 " JOIN {{ ref('raw.payments') }} p ON u.user_id = p.user_id"
             ),
-            "columns": [
-                {"name": "user_id", "type": "INTEGER"},
-                {"name": "email_clean", "type": "VARCHAR"},
-                {"name": "amount", "type": "DECIMAL"},
+            "children": [
+                {"name": "user_id", "kind": "column"},
+                {"name": "email_clean", "kind": "column"},
+                {"name": "amount", "kind": "column"},
             ],
         })
     )
@@ -177,7 +168,7 @@ class TestFullWorkflow:
         assert "staging.users" in downstream.names
         assert "mart.enriched" in downstream.names
 
-    def test_field_introspection(self, full_project: Path):
+    def test_children_introspection(self, full_project: Path):
         registry = Registry()
         loader = ProjectLoader(
             registry,
@@ -189,15 +180,15 @@ class TestFullWorkflow:
         asset = registry.get("staging.users")
         assert asset is not None
 
-        # list_fields
-        fields = asset.list_fields()
-        assert "user_id" in fields
-        assert "email_clean" in fields
+        # list_children
+        children = asset.list_children()
+        assert "user_id" in children
+        assert "email_clean" in children
 
-        # get_field
-        col = asset.get_field("email_clean")
+        # get_child
+        col = asset.get_child("email_clean")
         assert col is not None
-        assert col.pii is True  # type: ignore[attr-defined]
+        assert col.kind == "column"
 
     def test_fingerprint_stability(self, full_project: Path):
         registry1 = Registry()

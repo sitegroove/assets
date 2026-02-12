@@ -11,10 +11,8 @@ class MockLineageResolver(LineageResolver):
     def resolve(self, sql: str, schema: dict[str, list[str]]) -> list[FieldMapping]:
         return [
             FieldMapping(
-                source_asset="raw.users",
-                source_field="email",
-                target_asset="staging.users",
-                target_field="email_clean",
+                source="raw.users/email",
+                target="staging.users/email_clean",
                 transform="LOWER(TRIM(...))",
             )
         ]

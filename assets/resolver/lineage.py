@@ -24,9 +24,10 @@ class LineageResolver(ABC):
 
         Args:
             sql: Clean SQL (refs already resolved to table names).
-            schema: {table_name: [col1, col2, ...]} for upstream assets.
+            schema: {asset_name: [child_name, ...]} for upstream assets.
 
         Returns:
-            List of FieldMapping entries describing source → target column lineage.
+            List of FieldMapping entries with path-based source/target
+            (e.g., source="raw.users/email", target="staging.users/email_clean").
         """
         ...

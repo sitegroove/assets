@@ -39,9 +39,9 @@ Everything in the library builds on these models.
 
 | File | Key Types | Purpose |
 |---|---|---|
-| `fields.py` | `AssetField()` | Pydantic `Field()` wrapper with `fingerprint`, `field_source`, `field_name_key` metadata |
-| `asset.py` | `Asset` | Base model: name, kind, tags, sql, metadata. Computed `fingerprint` (SHA-256). Field introspection via `get_field()`, `list_fields()` |
-| `dependency.py` | `Dependency`, `FieldMapping` | Graph edge (source→target) with type and computed fingerprint. FieldMapping for column-level lineage |
+| `fields.py` | `AssetField()` | Pydantic `Field()` wrapper with `fingerprint` metadata |
+| `asset.py` | `Asset` | Base model: name, kind, tags, sql, metadata, children. Computed `fingerprint` (SHA-256). Child introspection via `get_child()`, `list_children()`, `get_child_at()`. Recursive nesting via `children: list[Asset]` |
+| `dependency.py` | `Dependency`, `FieldMapping` | Graph edge (source→target) with type and computed fingerprint. FieldMapping uses path-based `source`/`target` (e.g., `"raw.users/email"`) with `/` separator |
 | `graph.py` | `AssetGraph`, `SelectionResult` | DAG built from assets + dependencies. Traversal (`ancestors`, `descendants`), `topological_sort()`, `roots()`, `leaves()` |
 | `registry.py` | `Registry` | Central store. `register()` extracts SQL refs, builds dependencies. Lazy graph. Delegates selector queries and lineage resolution |
 
@@ -235,14 +235,18 @@ The library is designed to be extended by consumers at these points:
 ### 1. Asset Subclasses
 
 ```python
+class Column(Asset):
+    type: str = ""
+    pii: bool = False
+
 class DataModel(Asset):
-    columns: list[Column] = AssetField(default_factory=list, field_source=True)
     row_count: int = AssetField(default=0, fingerprint=False)
 ```
 
 - Add any Pydantic fields
 - Use `AssetField(fingerprint=False)` to exclude from change detection
-- Use `AssetField(field_source=True)` for introspectable child collections
+- Nest child assets via the inherited `children: list[Asset]` field
+- Override `children` type for specific subtypes: `children: list[Column] = []`
 
 ### 2. File Loaders (`ProjectLoader`)
 
@@ -337,8 +341,8 @@ assets/
 ├── __init__.py              # Public API: 30 exports
 ├── core/
 │   ├── __init__.py
-│   ├── fields.py            # AssetField(), FINGERPRINT_KEY, FIELD_SOURCE_KEY, FIELD_NAME_KEY
-│   ├── asset.py             # Asset (BaseModel), _serialize_value()
+│   ├── fields.py            # AssetField(), FINGERPRINT_KEY
+│   ├── asset.py             # Asset (BaseModel), _serialize_value(), model_rebuild()
 │   ├── dependency.py        # Dependency, FieldMapping
 │   ├── graph.py             # AssetGraph, SelectionResult
 │   └── registry.py          # Registry
@@ -368,8 +372,8 @@ assets/
 
 tests/
 ├── conftest.py              # Shared fixtures (Column, DataModel, sample_assets)
-├── test_fields.py           # 7 tests
-├── test_asset.py            # 14 tests
+├── test_fields.py           # 4 tests
+├── test_asset.py            # 20 tests
 ├── test_dependency.py       # 7 tests
 ├── test_graph.py            # 13 tests
 ├── test_registry.py         # 12 tests
@@ -386,11 +390,12 @@ tests/
 └── test_integration.py      # 7 tests — end-to-end workflows
 
 demos/
-├── 01_core_basics.py        # Assets, fingerprinting, graph, selectors
+├── 01_core_basics.py        # Assets, fingerprinting, graph, selectors, nested children
 ├── 02_plan_apply_workflow.py # Plan/apply/modify lifecycle
 ├── 03_multi_environment.py  # Shallow envs, promotion
 ├── 04_custom_loader.py      # YAML+SQL ProjectLoader subclass
-└── 05_lineage_resolver.py   # Custom LineageResolver implementation
+├── 05_lineage_resolver.py   # Custom LineageResolver implementation
+└── 06_ecommerce_platform.py # Full e-commerce platform with sqlglot lineage
 ```
 
 ## Future Considerations

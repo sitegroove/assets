@@ -31,23 +31,52 @@ class TestDependency:
 
 
 class TestFieldMapping:
-    def test_basic_creation(self):
+    def test_path_based_creation(self):
         fm = FieldMapping(
-            source_asset="raw.users",
-            source_field="email",
-            target_asset="staging.users",
-            target_field="email_clean",
+            source="raw.users/email",
+            target="staging.users/email_clean",
             transform="LOWER(TRIM(...))",
         )
+        assert fm.source == "raw.users/email"
+        assert fm.target == "staging.users/email_clean"
         assert fm.source_asset == "raw.users"
+        assert fm.source_field == "email"
+        assert fm.target_asset == "staging.users"
         assert fm.target_field == "email_clean"
         assert fm.transform == "LOWER(TRIM(...))"
 
     def test_no_transform(self):
         fm = FieldMapping(
-            source_asset="a",
-            source_field="x",
-            target_asset="b",
-            target_field="y",
+            source="a/x",
+            target="b/y",
         )
         assert fm.transform is None
+
+    def test_legacy_constructor_backward_compat(self):
+        fm = FieldMapping(
+            source_asset="raw.users",
+            source_field="email",
+            target_asset="staging.users",
+            target_field="email_clean",
+        )
+        assert fm.source == "raw.users/email"
+        assert fm.target == "staging.users/email_clean"
+        assert fm.source_asset == "raw.users"
+        assert fm.source_field == "email"
+
+    def test_asset_only_path(self):
+        fm = FieldMapping(source="raw.users", target="staging.users")
+        assert fm.source_asset == "raw.users"
+        assert fm.source_field == ""
+        assert fm.target_asset == "staging.users"
+        assert fm.target_field == ""
+
+    def test_deep_child_path(self):
+        fm = FieldMapping(
+            source="db/public/users/email",
+            target="warehouse/analytics/user_emails/email",
+        )
+        assert fm.source_asset == "db"
+        assert fm.source_field == "public/users/email"
+        assert fm.target_asset == "warehouse"
+        assert fm.target_field == "analytics/user_emails/email"
