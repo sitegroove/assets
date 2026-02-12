@@ -114,6 +114,34 @@ class SQLiteCompiledCache:
         )
         self.conn.commit()
 
+    def put_many(
+        self, entries: list[tuple[Path, Path, dict[str, Any]]]
+    ) -> None:
+        """Batch-insert multiple compiled entries in a single transaction.
+
+        Args:
+            entries: list of (source_path, root, data) tuples.
+        """
+        rows = [
+            (
+                self._rel_path(src, root),
+                self._mtime_ns(src),
+                self._content_hash(src),
+                json.dumps(data),
+            )
+            for src, root, data in entries
+        ]
+        with self.conn:
+            self.conn.executemany(
+                """INSERT INTO compiled (path, source_mtime, content_hash, data)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(path) DO UPDATE SET
+                       source_mtime = excluded.source_mtime,
+                       content_hash = excluded.content_hash,
+                       data = excluded.data""",
+                rows,
+            )
+
     def clean(self, root: Path) -> int:
         """Remove entries whose source files no longer exist. Returns count removed."""
         rows = self.conn.execute("SELECT path FROM compiled").fetchall()

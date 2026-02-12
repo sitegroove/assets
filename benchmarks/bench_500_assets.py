@@ -202,6 +202,23 @@ def bench_compiled_cache(name: str, make_cache, tmp_dir: Path, src_dir: Path) ->
     results["put_cold"] = stats
     print(f"  Put ({NUM_ASSETS} files, cold):            {_fmt(stats)}")
 
+    # --- Put batch (only for SQLiteCompiledCache) ---
+    if hasattr(cache, "put_many"):
+        # Fresh cache for fair comparison
+        cache_batch = make_cache(tmp_dir / "batch")
+
+        def _put_batch():
+            entries = [
+                (src, src_dir, json.loads(src.read_text())) for src in source_files
+            ]
+            cache_batch.put_many(entries)
+
+        stats = _timed(_put_batch, iterations=3)
+        results["put_batch"] = stats
+        print(f"  Put batch ({NUM_ASSETS} files):             {_fmt(stats)}")
+        if hasattr(cache_batch, "close"):
+            cache_batch.close()
+
     # --- Get (mtime fast-path hit) ---
     def _get_all_hit():
         hits = 0
@@ -344,7 +361,7 @@ def main() -> None:
     # Compiled cache comparison
     print(f"\n  {'Operation':<30} {'File':>10} {'SQLite':>10}")
     print(f"  {'─' * 50}")
-    for op in ["put_cold", "get_hit", "get_miss", "clean_no_orphans"]:
+    for op in ["put_cold", "put_batch", "get_hit", "get_miss", "clean_no_orphans"]:
         row = f"  {op:<30}"
         for cache_name in ["CompiledCache (file)", "SQLiteCompiledCache"]:
             if op in all_results.get(cache_name, {}):

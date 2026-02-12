@@ -129,6 +129,34 @@ class TestSQLiteCompiledCache:
         assert cache.get(src1, tmp_project) == {"name": "users"}
         assert cache.get(src2, tmp_project) == {"name": "payments"}
 
+    def test_put_many(
+        self, cache: SQLiteCompiledCache, tmp_project: Path
+    ):
+        src1 = tmp_project / "models" / "users.json"
+        src2 = tmp_project / "models" / "payments.json"
+        src2.write_text(json.dumps({"name": "payments"}))
+
+        cache.put_many([
+            (src1, tmp_project, {"name": "users"}),
+            (src2, tmp_project, {"name": "payments"}),
+        ])
+
+        assert cache.get(src1, tmp_project) == {"name": "users"}
+        assert cache.get(src2, tmp_project) == {"name": "payments"}
+
+    def test_put_many_overwrites(
+        self, cache: SQLiteCompiledCache, tmp_project: Path
+    ):
+        src = tmp_project / "models" / "users.json"
+        cache.put(src, tmp_project, {"name": "v1"})
+        cache.put_many([(src, tmp_project, {"name": "v2"})])
+        assert cache.get(src, tmp_project) == {"name": "v2"}
+
+    def test_put_many_empty(
+        self, cache: SQLiteCompiledCache, tmp_project: Path
+    ):
+        cache.put_many([])  # should not error
+
     def test_clean_selective(
         self, cache: SQLiteCompiledCache, tmp_project: Path
     ):

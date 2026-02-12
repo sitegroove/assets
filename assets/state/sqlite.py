@@ -156,56 +156,60 @@ class SQLiteBackend(StateBackend):
                     (environment, *removed_names),
                 )
 
-            for asset_state in state.assets.values():
-                source_files_json = json.dumps(
-                    [sf.model_dump() for sf in asset_state.source_files]
+            # Batch upsert assets via executemany
+            asset_rows = [
+                (
+                    environment,
+                    a.name,
+                    a.kind,
+                    a.fingerprint,
+                    json.dumps(a.data),
+                    json.dumps([sf.model_dump() for sf in a.source_files]),
+                    a.applied_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                    a.applied_by,
+                    a.version,
+                    int(a.deleted),
                 )
-                self.conn.execute(
-                    """INSERT INTO assets
-                       (environment, name, kind, fingerprint, data, source_files,
-                        applied_at, applied_by, version, deleted)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(environment, name) DO UPDATE SET
-                           kind = excluded.kind,
-                           fingerprint = excluded.fingerprint,
-                           data = excluded.data,
-                           source_files = excluded.source_files,
-                           applied_at = excluded.applied_at,
-                           applied_by = excluded.applied_by,
-                           version = excluded.version,
-                           deleted = excluded.deleted""",
-                    (
-                        environment,
-                        asset_state.name,
-                        asset_state.kind,
-                        asset_state.fingerprint,
-                        json.dumps(asset_state.data),
-                        source_files_json,
-                        asset_state.applied_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-                        asset_state.applied_by,
-                        asset_state.version,
-                        int(asset_state.deleted),
-                    ),
-                )
+                for a in state.assets.values()
+            ]
+            self.conn.executemany(
+                """INSERT INTO assets
+                   (environment, name, kind, fingerprint, data, source_files,
+                    applied_at, applied_by, version, deleted)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(environment, name) DO UPDATE SET
+                       kind = excluded.kind,
+                       fingerprint = excluded.fingerprint,
+                       data = excluded.data,
+                       source_files = excluded.source_files,
+                       applied_at = excluded.applied_at,
+                       applied_by = excluded.applied_by,
+                       version = excluded.version,
+                       deleted = excluded.deleted""",
+                asset_rows,
+            )
 
-            # Sync dependencies: replace all for this environment
+            # Batch insert dependencies via executemany
             self.conn.execute(
                 "DELETE FROM dependencies WHERE environment = ?", (environment,)
             )
-            for dep in state.dependencies:
-                self.conn.execute(
-                    """INSERT INTO dependencies
-                       (environment, source, target, type, fingerprint, data)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        environment,
-                        dep.source,
-                        dep.target,
-                        dep.type,
-                        dep.fingerprint,
-                        json.dumps(dep.data),
-                    ),
+            dep_rows = [
+                (
+                    environment,
+                    dep.source,
+                    dep.target,
+                    dep.type,
+                    dep.fingerprint,
+                    json.dumps(dep.data),
                 )
+                for dep in state.dependencies
+            ]
+            self.conn.executemany(
+                """INSERT INTO dependencies
+                   (environment, source, target, type, fingerprint, data)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                dep_rows,
+            )
 
     @contextmanager
     def lock(self, environment: str) -> Generator[None, None, None]:
