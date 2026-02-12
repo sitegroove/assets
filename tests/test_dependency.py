@@ -51,3 +51,32 @@ class TestFieldMapping:
             target_field="y",
         )
         assert fm.transform is None
+
+    def test_source_path(self):
+        fm = FieldMapping(
+            source_asset="raw.users",
+            source_field="email",
+            target_asset="staging.users",
+            target_field="email_clean",
+        )
+        assert fm.source_path == "raw.users/email"
+
+    def test_target_path(self):
+        fm = FieldMapping(
+            source_asset="raw.users",
+            source_field="email",
+            target_asset="staging.users",
+            target_field="email_clean",
+        )
+        assert fm.target_path == "staging.users/email_clean"
+
+
+class TestContainsDependency:
+    def test_contains_type(self):
+        d = Dependency(source="staging.users", target="staging.users/email", type="contains")
+        assert d.type == "contains"
+
+    def test_contains_fingerprint_differs_from_ref(self):
+        d1 = Dependency(source="a", target="b", type="ref")
+        d2 = Dependency(source="a", target="b", type="contains")
+        assert d1.fingerprint != d2.fingerprint

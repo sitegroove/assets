@@ -10,16 +10,13 @@ Run: python demos/05_lineage_resolver.py
 
 import re
 
-from pydantic import BaseModel
-
 from assets import Asset, AssetField, FieldMapping, LineageResolver, Registry
 
 # ──────────────────────────────────────────────────────────────
 # 1. Define asset types
 # ──────────────────────────────────────────────────────────────
 
-class Column(BaseModel):
-    name: str
+class Column(Asset):
     type: str = ""
 
 

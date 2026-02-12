@@ -32,6 +32,9 @@ class Asset(BaseModel):
     kind: str = ""
     description: str = ""
 
+    # — hierarchy —
+    parent: str | None = None
+
     # — graph (populated by ref resolver, not user-set) —
     depends_on: list[str] = []
 
@@ -41,6 +44,16 @@ class Asset(BaseModel):
     # — classification —
     tags: list[str] = []
     metadata: dict[str, Any] = {}
+
+    @property
+    def local_name(self) -> str:
+        """The unqualified name (last segment after '/')."""
+        return self.name.rsplit("/", 1)[-1]
+
+    @property
+    def depth(self) -> int:
+        """Nesting depth: 0 for top-level, 1 for direct child, etc."""
+        return self.name.count("/")
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -67,10 +80,19 @@ class Asset(BaseModel):
     # — Field source introspection —
 
     def get_field(self, field_name: str) -> BaseModel | None:
-        """Look up a child field model by name across all field_source attributes."""
+        """Look up a child field model by name across all field_source attributes.
+
+        Matches against local_name for Asset children (whose names get
+        qualified on registration), or falls back to the field_name_key.
+        """
         for items, name_key in self._field_sources():
             match = next(
-                (f for f in items if getattr(f, name_key, None) == field_name),
+                (
+                    f
+                    for f in items
+                    if getattr(f, "local_name", None) == field_name
+                    or getattr(f, name_key, None) == field_name
+                ),
                 None,
             )
             if match is not None:
@@ -78,10 +100,18 @@ class Asset(BaseModel):
         return None
 
     def list_fields(self) -> list[str]:
-        """List all field names from all field_source attributes."""
+        """List all field names from all field_source attributes.
+
+        Uses local_name for Asset children (whose names get qualified
+        on registration), preserving unqualified names for consumers.
+        """
         result: list[str] = []
-        for items, name_key in self._field_sources():
-            result.extend(getattr(f, name_key) for f in items if hasattr(f, name_key))
+        for items, _name_key in self._field_sources():
+            for f in items:
+                if hasattr(f, "local_name"):
+                    result.append(f.local_name)
+                elif hasattr(f, _name_key):
+                    result.append(getattr(f, _name_key))
         return result
 
     def _field_sources(self) -> list[tuple[list[Any], str]]:

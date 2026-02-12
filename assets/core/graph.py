@@ -29,6 +29,7 @@ class AssetGraph:
         self._forward: dict[str, set[str]] = defaultdict(set)  # parent → children
         self._backward: dict[str, set[str]] = defaultdict(set)  # child → parents
         self._dependencies: list[Dependency] = []
+        self._edge_types: dict[tuple[str, str], str] = {}
 
     @classmethod
     def build(
@@ -42,6 +43,7 @@ class AssetGraph:
         for dep in dependencies:
             g._forward[dep.source].add(dep.target)
             g._backward[dep.target].add(dep.source)
+            g._edge_types[(dep.source, dep.target)] = dep.type
         return g
 
     # — Traversal —
@@ -61,6 +63,26 @@ class AssetGraph:
     def leaves(self) -> set[str]:
         """Assets with no downstream dependents."""
         return {n for n in self._assets if not self._forward.get(n)}
+
+    def children(self, name: str) -> set[str]:
+        """Direct children via containment edges only."""
+        return {
+            t
+            for t in self._forward.get(name, set())
+            if self._edge_types.get((name, t)) == "contains"
+        }
+
+    def data_dependencies(self, name: str) -> set[str]:
+        """Forward edges that are NOT containment (i.e., ref/data-flow)."""
+        return {
+            t
+            for t in self._forward.get(name, set())
+            if self._edge_types.get((name, t)) != "contains"
+        }
+
+    def top_level_assets(self) -> dict[str, Asset]:
+        """Assets with no '/' in name (not nested children)."""
+        return {n: a for n, a in self._assets.items() if "/" not in n}
 
     def topological_sort(self) -> list[str]:
         """Kahn's algorithm — returns assets in dependency order."""

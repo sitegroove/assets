@@ -1,6 +1,6 @@
 """Tests for the selector parser."""
 
-from assets import Registry
+from assets import Asset, AssetField, Registry
 
 
 class TestSelectors:
@@ -66,3 +66,64 @@ class TestSelectors:
     def test_tag_no_match(self, populated_registry: Registry):
         result = populated_registry.select("tag:nonexistent")
         assert result.names == set()
+
+
+class Column(Asset):
+    type: str = ""
+
+
+class DataModel(Asset):
+    columns: list[Column] = AssetField(default_factory=list, field_source=True)
+
+
+class TestNestedSelectors:
+    def test_children_selector(self):
+        registry = Registry()
+        m = DataModel(
+            name="staging.users",
+            columns=[Column(name="id"), Column(name="email")],
+        )
+        registry.register(m)
+        result = registry.select("children:staging.users")
+        assert result.names == {"staging.users/id", "staging.users/email"}
+
+    def test_children_selector_no_children(self):
+        registry = Registry()
+        registry.register(Asset(name="raw.users"))
+        result = registry.select("children:raw.users")
+        assert result.names == set()
+
+    def test_parent_selector(self):
+        registry = Registry()
+        m = DataModel(
+            name="staging.users",
+            columns=[Column(name="email")],
+        )
+        registry.register(m)
+        result = registry.select("parent:staging.users/email")
+        assert result.names == {"staging.users"}
+
+    def test_parent_selector_top_level(self):
+        registry = Registry()
+        registry.register(Asset(name="raw.users"))
+        result = registry.select("parent:raw.users")
+        assert result.names == set()
+
+    def test_top_selector_all(self):
+        registry = Registry()
+        m = DataModel(
+            name="staging.users",
+            columns=[Column(name="email")],
+        )
+        registry.register(m)
+        registry.register(Asset(name="raw.users"))
+        result = registry.select("top:*")
+        assert result.names == {"staging.users", "raw.users"}
+        assert "staging.users/email" not in result.names
+
+    def test_top_selector_pattern(self):
+        registry = Registry()
+        registry.register(Asset(name="raw.users"))
+        registry.register(Asset(name="staging.users"))
+        result = registry.select("top:raw.*")
+        assert result.names == {"raw.users"}

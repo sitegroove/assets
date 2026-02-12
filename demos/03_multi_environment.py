@@ -12,8 +12,6 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pydantic import BaseModel
-
 from assets import (
     Asset,
     AssetField,
@@ -26,8 +24,7 @@ from assets import (
 )
 
 
-class Column(BaseModel):
-    name: str
+class Column(Asset):
     type: str = ""
 
 

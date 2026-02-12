@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel
 
 from assets import (
     Asset,
@@ -31,8 +30,7 @@ from assets import (
 # 1. Define asset types
 # ──────────────────────────────────────────────────────────────
 
-class Column(BaseModel):
-    name: str
+class Column(Asset):
     type: str = ""
     description: str = ""
     pii: bool = False
@@ -189,9 +187,13 @@ if result.errors:
 print("\n=== Registered Assets ===\n")
 
 for asset in registry.all():
+    if "/" in asset.name:
+        continue  # skip children
     deps = f" -> depends_on: {asset.depends_on}" if asset.depends_on else ""
     sql_info = " (has SQL)" if asset.sql else ""
-    print(f"  {asset.name} [kind={asset.kind}]{sql_info}{deps}")
+    n_children = len(registry.children(asset.name))
+    children_info = f" ({n_children} fields)" if n_children else ""
+    print(f"  {asset.name} [kind={asset.kind}]{sql_info}{children_info}{deps}")
 
 # ──────────────────────────────────────────────────────────────
 # 6. Graph queries

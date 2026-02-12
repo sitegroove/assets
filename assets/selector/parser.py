@@ -30,6 +30,9 @@ class SelectorParser:
             staging.users       — exact match
             tag:pii             — all with tag "pii"
             kind:data_model     — all with kind "data_model"
+            children:staging.users — direct children of asset
+            parent:staging.users/email — parent of asset
+            top:*               — only top-level assets (no '/' in name)
             +staging.users      — asset + all ancestors
             staging.users+      — asset + all descendants
             +staging.users+     — asset + ancestors + descendants
@@ -74,6 +77,37 @@ class SelectorParser:
                 n for n, a in self._graph.assets.items() if getattr(a, "kind", "") == kind
             }
             matched = [self._graph.assets[n] for n in sorted(names)]
+            return SelectionResult(assets=matched, names=names)
+
+        # children:X — direct children of asset X
+        if selector.startswith("children:"):
+            parent_name = selector[9:]
+            names = self._graph.children(parent_name)
+            matched = [self._graph.assets[n] for n in sorted(names) if n in self._graph.assets]
+            return SelectionResult(assets=matched, names=names)
+
+        # parent:X — parent of asset X
+        if selector.startswith("parent:"):
+            child_name = selector[7:]
+            child = self._graph.assets.get(child_name)
+            if child and getattr(child, "parent", None):
+                parent_name = child.parent
+                if parent_name in self._graph.assets:
+                    return SelectionResult(
+                        assets=[self._graph.assets[parent_name]],
+                        names={parent_name},
+                    )
+            return SelectionResult()
+
+        # top:* — only top-level assets (no '/' in name)
+        if selector.startswith("top:"):
+            pattern = selector[4:]
+            top = self._graph.top_level_assets()
+            if pattern == "*":
+                names = set(top.keys())
+            else:
+                names = {n for n in top if fnmatch.fnmatch(n, pattern)}
+            matched = [top[n] for n in sorted(names)]
             return SelectionResult(assets=matched, names=names)
 
         # Graph traversal patterns: +name, name+, +name+, name+2

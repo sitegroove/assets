@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import TYPE_CHECKING
 
 from assets.core.dependency import Dependency, FieldMapping
+from assets.core.fields import CHILD_KIND_KEY, FIELD_NAME_KEY, FIELD_SOURCE_KEY
 from assets.core.graph import AssetGraph, SelectionResult
 
 if TYPE_CHECKING:
@@ -24,7 +27,7 @@ class Registry:
         self._graph: AssetGraph | None = None
 
     def register(self, asset: Asset) -> None:
-        """Register an asset. Extracts refs from SQL automatically."""
+        """Register an asset. Extracts refs from SQL and flattens children."""
         self._assets[asset.name] = asset
         self._graph = None  # invalidate cached graph
         if asset.sql:
@@ -34,6 +37,65 @@ class Registry:
                 self._dependencies.append(
                     Dependency(source=ref, target=asset.name, type="ref")
                 )
+
+        # If asset.parent is set explicitly, create containment dependency
+        if asset.parent:
+            self._dependencies.append(
+                Dependency(source=asset.parent, target=asset.name, type="contains")
+            )
+
+        # Flatten inline children from field_source attributes
+        self._register_children(asset)
+
+    def _register_children(self, asset: Asset) -> None:
+        """Scan field_source attributes, qualify child names, register each."""
+        from assets.core.asset import Asset as AssetClass
+
+        for attr_name, field_info in asset.__class__.model_fields.items():
+            extra = field_info.json_schema_extra or {}
+            if not isinstance(extra, dict) or not extra.get(FIELD_SOURCE_KEY, False):
+                continue
+
+            items = getattr(asset, attr_name, None) or []
+            name_key = extra.get(FIELD_NAME_KEY, "name")
+            child_kind = extra.get(CHILD_KIND_KEY, "field")
+
+            for item in items:
+                if not isinstance(item, AssetClass):
+                    continue
+
+                # Qualify child name: parent/child_local_name
+                local = getattr(item, name_key, item.name)
+                qualified = f"{asset.name}/{local}"
+                item.name = qualified
+                item.parent = asset.name
+                if not item.kind:
+                    item.kind = child_kind
+
+                # Register child (recursively flattens grandchildren)
+                self._assets[item.name] = item
+                self._graph = None
+                self._dependencies.append(
+                    Dependency(source=asset.name, target=item.name, type="contains")
+                )
+
+                # Recurse for grandchildren
+                self._register_children(item)
+
+    def children(self, name: str) -> list[Asset]:
+        """Direct children of an asset (via parent field)."""
+        return [a for a in self._assets.values() if a.parent == name]
+
+    def tree_fingerprint(self, name: str) -> str:
+        """Recursive SHA-256: asset fingerprint + sorted children tree fingerprints."""
+        asset = self._assets.get(name)
+        if asset is None:
+            return ""
+        parts = [asset.fingerprint]
+        for child in sorted(self.children(name), key=lambda a: a.name):
+            parts.append(self.tree_fingerprint(child.name))
+        raw = json.dumps(parts, sort_keys=True)
+        return hashlib.sha256(raw.encode()).hexdigest()
 
     def get(self, name: str) -> Asset | None:
         return self._assets.get(name)
@@ -93,7 +155,12 @@ class Registry:
             for dep_name in asset.depends_on:
                 dep_asset = self.get(dep_name)
                 if dep_asset:
-                    schema[dep_name] = dep_asset.list_fields()
+                    # Prefer registered children for schema, fall back to list_fields()
+                    dep_children = self.children(dep_name)
+                    if dep_children:
+                        schema[dep_name] = [c.local_name for c in dep_children]
+                    else:
+                        schema[dep_name] = dep_asset.list_fields()
             result = resolver.resolve(resolved_sql, schema)  # type: ignore[attr-defined]
             mappings.extend(result)
         return mappings

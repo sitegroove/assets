@@ -31,3 +31,13 @@ class FieldMapping(BaseModel):
     target_asset: str
     target_field: str
     transform: str | None = None
+
+    @property
+    def source_path(self) -> str:
+        """Full qualified path: source_asset/source_field."""
+        return f"{self.source_asset}/{self.source_field}"
+
+    @property
+    def target_path(self) -> str:
+        """Full qualified path: target_asset/target_field."""
+        return f"{self.target_asset}/{self.target_field}"

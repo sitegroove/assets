@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
 
 from assets import (
     Asset,
@@ -18,8 +17,7 @@ from assets import (
 )
 
 
-class Column(BaseModel):
-    name: str
+class Column(Asset):
     type: str = ""
     description: str = ""
     pii: bool = False
@@ -28,6 +26,12 @@ class Column(BaseModel):
 class DataModel(Asset):
     columns: list[Column] = AssetField(default_factory=list, field_source=True)
     row_count: int = AssetField(default=0, fingerprint=False)
+
+
+# 4 top-level assets + 10 columns = 14 total
+_NUM_TOP_LEVEL = 4
+_NUM_COLUMNS = 10
+_NUM_TOTAL = _NUM_TOP_LEVEL + _NUM_COLUMNS
 
 
 @pytest.fixture
@@ -113,14 +117,14 @@ class TestFullWorkflow:
         )
         mgr = StateManager(registry, loader, backend, config)
 
-        # Plan
+        # Plan — 4 parents + 10 columns = 14 total
         plan = mgr.plan(str(full_project / "models"), environment="production")
         assert plan.has_changes
-        assert len(plan.changeset.asset_changes) == 4
+        assert len(plan.changeset.asset_changes) == _NUM_TOTAL
 
         # Apply
         result = mgr.apply(plan, environment="production")
-        assert result.created == 4
+        assert result.created == _NUM_TOTAL
 
         # No changes after apply
         plan2 = mgr.plan(str(full_project / "models"), environment="production")
@@ -135,18 +139,35 @@ class TestFullWorkflow:
         )
         loader.load(str(full_project / "models"))
 
-        # Graph traversal
         g = registry.graph
+
+        # Ancestors traverse backward (ref) edges — unaffected by containment
         assert g.ancestors("mart.enriched") == {
             "staging.users",
             "raw.payments",
             "raw.users",
         }
-        assert g.descendants("raw.users") == {"staging.users", "mart.enriched"}
-        assert g.roots() == {"raw.users", "raw.payments"}
-        assert g.leaves() == {"mart.enriched"}
 
-        # Topological sort
+        # Descendants now include containment children
+        desc = g.descendants("raw.users")
+        assert {"staging.users", "mart.enriched"}.issubset(desc)
+        assert "raw.users/user_id" in desc
+        assert "raw.users/email" in desc
+
+        # Roots: assets with no backward edges (unchanged)
+        assert g.roots() == {"raw.users", "raw.payments"}
+
+        # Leaves: column children are the new leaves
+        leaves = g.leaves()
+        assert "mart.enriched" not in leaves  # has children now
+        assert "mart.enriched/user_id" in leaves
+        assert "mart.enriched/amount" in leaves
+
+        # Top-level assets filter
+        top = g.top_level_assets()
+        assert set(top.keys()) == {"raw.users", "raw.payments", "staging.users", "mart.enriched"}
+
+        # Topological sort still orders data-flow correctly
         order = g.topological_sort()
         assert order.index("raw.users") < order.index("staging.users")
         assert order.index("staging.users") < order.index("mart.enriched")
@@ -164,13 +185,22 @@ class TestFullWorkflow:
         pii = registry.select("tag:pii")
         assert pii.names == {"staging.users"}
 
-        # Kind selector
+        # Kind selector — only top-level sources, not children
         sources = registry.select("kind:source")
         assert sources.names == {"raw.users", "raw.payments"}
 
-        # Wildcard
-        raw = registry.select("raw.*")
-        assert raw.names == {"raw.users", "raw.payments"}
+        # Kind:field — children
+        fields = registry.select("kind:field")
+        assert "raw.users/user_id" in fields.names
+        assert len(fields.names) == _NUM_COLUMNS
+
+        # Top-level wildcard via top: selector
+        top_raw = registry.select("top:raw.*")
+        assert top_raw.names == {"raw.users", "raw.payments"}
+
+        # Children selector
+        children = registry.select("children:raw.users")
+        assert children.names == {"raw.users/user_id", "raw.users/email"}
 
         # Graph expansion
         downstream = registry.select("raw.users+")
@@ -189,15 +219,20 @@ class TestFullWorkflow:
         asset = registry.get("staging.users")
         assert asset is not None
 
-        # list_fields
+        # list_fields returns local (unqualified) names
         fields = asset.list_fields()
         assert "user_id" in fields
         assert "email_clean" in fields
 
-        # get_field
+        # get_field matches by local name
         col = asset.get_field("email_clean")
         assert col is not None
         assert col.pii is True  # type: ignore[attr-defined]
+
+        # Children also accessible via registry
+        children = registry.children("staging.users")
+        child_names = {c.local_name for c in children}
+        assert child_names == {"user_id", "email_clean"}
 
     def test_fingerprint_stability(self, full_project: Path):
         registry1 = Registry()
@@ -221,6 +256,10 @@ class TestFullWorkflow:
             a2 = registry2.get(name)
             assert a1 is not None and a2 is not None
             assert a1.fingerprint == a2.fingerprint
+
+        # Tree fingerprints also stable
+        for name in ["raw.users", "staging.users"]:
+            assert registry1.tree_fingerprint(name) == registry2.tree_fingerprint(name)
 
     def test_multi_env_workflow(self, full_project: Path):
         registry = Registry()

@@ -4,16 +4,13 @@
 Run: python demos/01_core_basics.py
 """
 
-from pydantic import BaseModel
-
 from assets import Asset, AssetField, Registry
 
 # ──────────────────────────────────────────────────────────────
 # 1. Define a custom asset type
 # ──────────────────────────────────────────────────────────────
 
-class Column(BaseModel):
-    name: str
+class Column(Asset):
     type: str = ""
     description: str = ""
     pii: bool = False
@@ -123,8 +120,9 @@ print(f"staging.users depends_on: {staging_users.depends_on}")
 mart = registry.get("mart.user_spending")
 print(f"mart.user_spending depends_on: {mart.depends_on}")
 
-print(f"\nAll dependencies ({len(registry.dependencies)}):")
-for dep in registry.dependencies:
+ref_deps = [d for d in registry.dependencies if d.type == "ref"]
+print(f"\nRef dependencies ({len(ref_deps)}):")
+for dep in ref_deps:
     print(f"  {dep.source} -> {dep.target} (type={dep.type})")
 
 # ──────────────────────────────────────────────────────────────
@@ -134,9 +132,10 @@ for dep in registry.dependencies:
 print("\n=== Graph Traversal ===\n")
 
 graph = registry.graph
-print(f"Graph has {len(graph)} assets")
+print(f"Graph has {len(graph)} assets ({len(graph.top_level_assets())} top-level)")
 print(f"Roots (no upstream): {graph.roots()}")
-print(f"Leaves (no downstream): {graph.leaves()}")
+top_leaves = {n for n in graph.leaves() if "/" not in n}
+print(f"Top-level leaves (no downstream data deps): {top_leaves}")
 
 print(f"\nAncestors of mart.user_spending: {graph.ancestors('mart.user_spending')}")
 print(f"Descendants of raw.users: {graph.descendants('raw.users')}")
@@ -199,5 +198,41 @@ print(f"  email_clean.description: {email_col.description}")
 # Field not found
 missing = staging.get_field("nonexistent")
 print(f"  get_field('nonexistent'): {missing}")
+
+# ──────────────────────────────────────────────────────────────
+# 8. Nested assets
+# ──────────────────────────────────────────────────────────────
+
+print("\n=== Nested Assets ===\n")
+
+# Children are full graph nodes
+children = registry.children("staging.users")
+print(f"staging.users children: {[c.name for c in children]}")
+
+for child in children:
+    print(f"  {child.name}: local_name={child.local_name}, depth={child.depth}, kind={child.kind}")
+
+# Containment deps
+contains_deps = [d for d in registry.dependencies if d.type == "contains"]
+print(f"\nContainment dependencies: {len(contains_deps)}")
+for dep in contains_deps[:5]:
+    print(f"  {dep.source} -> {dep.target}")
+if len(contains_deps) > 5:
+    print(f"  ... and {len(contains_deps) - 5} more")
+
+# Tree fingerprint
+print(f"\nTree fingerprint for raw.users: {registry.tree_fingerprint('raw.users')[:16]}...")
+print(f"Tree fingerprint for staging.users: {registry.tree_fingerprint('staging.users')[:16]}...")
+
+# New selectors
+print("\n=== Nested Selectors ===\n")
+child_result = registry.select("children:raw.users")
+print(f"children:raw.users -> {child_result.names}")
+
+parent_result = registry.select("parent:raw.users/email")
+print(f"parent:raw.users/email -> {parent_result.names}")
+
+top_result = registry.select("top:*")
+print(f"top:* -> {top_result.names}")
 
 print("\nDone!")

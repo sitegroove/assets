@@ -101,3 +101,51 @@ class TestAssetGraph:
         g = _build_graph({"x": Asset(name="x")}, [])
         assert "x" in g
         assert "y" not in g
+
+    def test_edge_types_stored(self):
+        assets = {"a": Asset(name="a"), "b": Asset(name="b")}
+        deps = [Dependency(source="a", target="b", type="ref")]
+        g = _build_graph(assets, deps)
+        assert g._edge_types[("a", "b")] == "ref"
+
+    def test_children_containment_edges(self):
+        assets = {
+            "t": Asset(name="t"),
+            "t/c1": Asset(name="t/c1", parent="t"),
+            "t/c2": Asset(name="t/c2", parent="t"),
+            "other": Asset(name="other"),
+        }
+        deps = [
+            Dependency(source="t", target="t/c1", type="contains"),
+            Dependency(source="t", target="t/c2", type="contains"),
+            Dependency(source="t", target="other", type="ref"),
+        ]
+        g = _build_graph(assets, deps)
+        assert g.children("t") == {"t/c1", "t/c2"}
+
+    def test_data_dependencies_excludes_containment(self):
+        assets = {
+            "t": Asset(name="t"),
+            "t/c1": Asset(name="t/c1", parent="t"),
+            "other": Asset(name="other"),
+        }
+        deps = [
+            Dependency(source="t", target="t/c1", type="contains"),
+            Dependency(source="t", target="other", type="ref"),
+        ]
+        g = _build_graph(assets, deps)
+        assert g.data_dependencies("t") == {"other"}
+
+    def test_top_level_assets(self):
+        assets = {
+            "a": Asset(name="a"),
+            "a/x": Asset(name="a/x", parent="a"),
+            "b": Asset(name="b"),
+        }
+        g = _build_graph(assets, [])
+        top = g.top_level_assets()
+        assert set(top.keys()) == {"a", "b"}
+
+    def test_children_empty(self):
+        g = _build_graph({"a": Asset(name="a")}, [])
+        assert g.children("a") == set()

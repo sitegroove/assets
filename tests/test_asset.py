@@ -1,12 +1,9 @@
 """Tests for the base Asset model."""
 
-from pydantic import BaseModel
-
 from assets import Asset, AssetField
 
 
-class Column(BaseModel):
-    name: str
+class Column(Asset):
     type: str = ""
     pii: bool = False
 
@@ -24,6 +21,35 @@ class TestAsset:
         assert a.depends_on == []
         assert a.tags == []
         assert a.sql is None
+        assert a.parent is None
+
+    def test_parent_field(self):
+        a = Asset(name="staging.users/email", parent="staging.users")
+        assert a.parent == "staging.users"
+
+    def test_local_name_top_level(self):
+        a = Asset(name="staging.users")
+        assert a.local_name == "staging.users"
+
+    def test_local_name_nested(self):
+        a = Asset(name="staging.users/email")
+        assert a.local_name == "email"
+
+    def test_local_name_deep(self):
+        a = Asset(name="staging.users/email/pii")
+        assert a.local_name == "pii"
+
+    def test_depth_top_level(self):
+        a = Asset(name="staging.users")
+        assert a.depth == 0
+
+    def test_depth_one(self):
+        a = Asset(name="staging.users/email")
+        assert a.depth == 1
+
+    def test_depth_two(self):
+        a = Asset(name="staging.users/email/pii")
+        assert a.depth == 2
 
     def test_fingerprint_deterministic(self):
         a1 = Asset(name="test", kind="source")

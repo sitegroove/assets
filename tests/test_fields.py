@@ -1,6 +1,7 @@
 """Tests for AssetField metadata."""
 
 from assets.core.fields import (
+    CHILD_KIND_KEY,
     FIELD_NAME_KEY,
     FIELD_SOURCE_KEY,
     FINGERPRINT_KEY,
@@ -44,3 +45,13 @@ class TestAssetField:
         extra = f.json_schema_extra
         assert extra[FINGERPRINT_KEY] is False
         assert extra[FIELD_SOURCE_KEY] is True
+
+    def test_child_kind_default(self):
+        f = AssetField(field_source=True)
+        extra = f.json_schema_extra
+        assert extra[CHILD_KIND_KEY] == "field"
+
+    def test_child_kind_custom(self):
+        f = AssetField(field_source=True, child_kind="column")
+        extra = f.json_schema_extra
+        assert extra[CHILD_KIND_KEY] == "column"

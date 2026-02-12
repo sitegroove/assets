@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import BaseModel
 
 from assets import Asset, AssetField, Registry
 
 
-class Column(BaseModel):
-    name: str
+class Column(Asset):
     type: str = ""
     description: str = ""
     pii: bool = False
