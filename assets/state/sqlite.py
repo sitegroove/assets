@@ -156,22 +156,8 @@ class SQLiteBackend(StateBackend):
                     (environment, *removed_names),
                 )
 
-            # Batch upsert assets via executemany
-            asset_rows = [
-                (
-                    environment,
-                    a.name,
-                    a.kind,
-                    a.fingerprint,
-                    json.dumps(a.data),
-                    json.dumps([sf.model_dump() for sf in a.source_files]),
-                    a.applied_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-                    a.applied_by,
-                    a.version,
-                    int(a.deleted),
-                )
-                for a in state.assets.values()
-            ]
+            # Batch upsert assets via executemany with generator
+            # (generator avoids materializing all serialized rows in memory)
             self.conn.executemany(
                 """INSERT INTO assets
                    (environment, name, kind, fingerprint, data, source_files,
@@ -186,29 +172,42 @@ class SQLiteBackend(StateBackend):
                        applied_by = excluded.applied_by,
                        version = excluded.version,
                        deleted = excluded.deleted""",
-                asset_rows,
+                (
+                    (
+                        environment,
+                        a.name,
+                        a.kind,
+                        a.fingerprint,
+                        json.dumps(a.data),
+                        json.dumps([sf.model_dump() for sf in a.source_files]),
+                        a.applied_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                        a.applied_by,
+                        a.version,
+                        int(a.deleted),
+                    )
+                    for a in state.assets.values()
+                ),
             )
 
-            # Batch insert dependencies via executemany
+            # Batch insert dependencies via executemany with generator
             self.conn.execute(
                 "DELETE FROM dependencies WHERE environment = ?", (environment,)
             )
-            dep_rows = [
-                (
-                    environment,
-                    dep.source,
-                    dep.target,
-                    dep.type,
-                    dep.fingerprint,
-                    json.dumps(dep.data),
-                )
-                for dep in state.dependencies
-            ]
             self.conn.executemany(
                 """INSERT INTO dependencies
                    (environment, source, target, type, fingerprint, data)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                dep_rows,
+                (
+                    (
+                        environment,
+                        dep.source,
+                        dep.target,
+                        dep.type,
+                        dep.fingerprint,
+                        json.dumps(dep.data),
+                    )
+                    for dep in state.dependencies
+                ),
             )
 
     @contextmanager
