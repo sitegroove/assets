@@ -57,21 +57,21 @@ class Registry:
         """Query assets by selector expression."""
         return self.graph.select(selector)
 
-    def resolve_column_lineage(
+    def resolve_field_dependency(
         self,
         asset_name: str | None = None,
         selector: str | None = None,
         resolver: object | None = None,
         force: bool = False,
     ) -> list[FieldMapping]:
-        """Resolve column-level lineage using a consumer-provided resolver.
+        """Resolve field-level dependencies using a consumer-provided resolver.
 
         The resolver must implement a `resolve(sql, schema)` method.
         This is intentionally generic — the library provides the base class,
         consumers bring their own implementation (e.g., sqlglot-based).
         """
         if resolver is None:
-            raise ValueError("A lineage resolver instance must be provided by the consumer")
+            raise ValueError("A resolver instance must be provided by the consumer")
 
         targets: list[Asset] = []
         if asset_name:

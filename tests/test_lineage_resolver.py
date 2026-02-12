@@ -45,7 +45,7 @@ class TestLineageResolver:
         registry.register(downstream)
 
         resolver = MockLineageResolver()
-        result = registry.resolve_column_lineage(
+        result = registry.resolve_field_dependency(
             asset_name="staging.users", resolver=resolver
         )
         assert len(result) == 1

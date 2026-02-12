@@ -669,7 +669,7 @@ def main() -> None:
     resolver = SqlglotLineageResolver()
 
     for target_name in ["staging.users", "intermediate.user_orders", "mart.revenue"]:
-        lineage = registry.resolve_column_lineage(asset_name=target_name, resolver=resolver)
+        lineage = registry.resolve_field_dependency(asset_name=target_name, resolver=resolver)
         print(f"\n  {target_name} ({len(lineage)} mappings):")
         for m in lineage:
             t = f" [{m.transform}]" if m.transform else ""

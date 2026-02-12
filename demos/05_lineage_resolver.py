@@ -155,7 +155,7 @@ print("=== Column-Level Lineage ===\n")
 resolver = SimpleLineageResolver()
 
 # Resolve via registry (handles ref resolution and schema building)
-lineage = registry.resolve_column_lineage(
+lineage = registry.resolve_field_dependency(
     asset_name="staging.users",
     resolver=resolver,
 )
@@ -171,7 +171,7 @@ for mapping in lineage:
 
 print("\n=== Key Point: Lineage is On-Demand ===\n")
 print("Lineage resolution NEVER runs during register(), load(), or plan().")
-print("The consumer explicitly calls resolve_column_lineage() when needed:")
+print("The consumer explicitly calls resolve_field_dependency() when needed:")
 print("  - Catalog UI: user clicks a column")
 print("  - Impact analysis: 'what breaks if I drop this column?'")
 print("  - CI/PR review: resolve only changed models")
