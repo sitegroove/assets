@@ -810,6 +810,108 @@ def bench_downstream_queries(conn: sqlite3.Connection) -> dict[str, dict[str, fl
     return results
 
 
+def load_lineage_from_db(
+    conn: sqlite3.Connection,
+) -> tuple[dict[str, dict[str, dict[str, str]]], list[tuple[str, str, str, str, str | None]]]:
+    """Load all columns and lineage edges from SQLite cache (no sqlglot)."""
+    columns: dict[str, dict[str, dict[str, str]]] = {}
+    for row in conn.execute(
+        "SELECT model_name, column_name, data_type, description, source FROM columns"
+    ):
+        model = row[0]
+        if model not in columns:
+            columns[model] = {}
+        columns[model][row[1]] = {
+            "type": row[2], "description": row[3], "source": row[4],
+        }
+    edges: list[tuple[str, str, str, str, str | None]] = []
+    for row in conn.execute(
+        "SELECT source_model, source_column, target_model, target_column, transform "
+        "FROM column_lineage"
+    ):
+        edges.append((row[0], row[1], row[2], row[3], row[4]))
+    return columns, edges
+
+
+def bench_cache_vs_reparse(
+    conn: sqlite3.Connection,
+    models: list[ModelDef],
+    schema: dict[str, dict[str, str]],
+) -> dict[str, dict[str, float]]:
+    """Compare loading lineage from SQLite cache vs re-parsing with sqlglot."""
+    print(f"\n{'─' * 70}")
+    print("  Cache Hit vs Re-parse (sqlglot.lineage())")
+    print(f"{'─' * 70}")
+    results: dict[str, dict[str, float]] = {}
+
+    # 1) Cache hit: load everything from SQLite
+    stats = _timed(lambda: load_lineage_from_db(conn))
+    results["cache_load_all"] = stats
+    cached_cols, cached_edges = load_lineage_from_db(conn)
+    n_cached_cols = sum(len(v) for v in cached_cols.values())
+    print(f"  Cache load (all cols+edges):            {_fmt(stats)}")
+    print(f"    → {n_cached_cols} columns, {len(cached_edges)} edges from SQLite")
+
+    # 2) Cache hit: load lineage for a single model
+    sample_model = next(
+        (m.name for m in models if m.layer == "mart" and m.column_lineage), models[0].name
+    )
+    def _load_single():
+        conn.execute(
+            "SELECT column_name, data_type, description, source "
+            "FROM columns WHERE model_name = ?", (sample_model,)
+        ).fetchall()
+        conn.execute(
+            "SELECT source_model, source_column, target_column, transform "
+            "FROM column_lineage WHERE target_model = ?", (sample_model,)
+        ).fetchall()
+    stats = _timed(_load_single)
+    results["cache_single_model"] = stats
+    print(f"  Cache load (single model {sample_model}):  {_fmt(stats)}")
+
+    # 3) Re-parse: full lineage extraction with sqlglot
+    sql_models = [m for m in models if m.jinja_sql]
+
+    def _reparse_all():
+        s = dict(schema)
+        for m in sql_models:
+            extract_lineage_for_model(m, s)
+            if m.all_columns:
+                s[m.name] = {c: v.get("type", "VARCHAR") for c, v in m.all_columns.items()}
+    stats = _timed(_reparse_all, iterations=2)  # only 2 iterations — it's slow
+    results["reparse_all"] = stats
+    reparse_cols = sum(len(m.all_columns) for m in sql_models)
+    reparse_edges = sum(len(m.column_lineage) for m in sql_models)
+    print(f"  Re-parse (sqlglot, {len(sql_models)} models):         {_fmt(stats)}")
+    print(f"    → {reparse_cols} columns, {reparse_edges} edges from sqlglot")
+
+    # 4) Re-parse: single model
+    single = next((m for m in models if m.name == sample_model), sql_models[0])
+    def _reparse_single():
+        extract_lineage_for_model(single, schema)
+    stats = _timed(_reparse_single)
+    results["reparse_single_model"] = stats
+    print(f"  Re-parse (single model {sample_model}):    {_fmt(stats)}")
+
+    # 5) Verify integrity — cached data matches fresh parse
+    fresh_cols = sum(len(m.all_columns) for m in models)
+    fresh_edges = sum(len(m.column_lineage) for m in models)
+    cols_match = n_cached_cols == fresh_cols
+    edges_match = len(cached_edges) == fresh_edges
+    print(f"\n  Integrity check:")
+    print(f"    Columns: cached={n_cached_cols}, fresh={fresh_cols}  {'OK' if cols_match else 'MISMATCH'}")
+    print(f"    Edges:   cached={len(cached_edges)}, fresh={fresh_edges}  {'OK' if edges_match else 'MISMATCH'}")
+
+    # 6) Speedup
+    cache_ms = results["cache_load_all"]["median_ms"]
+    parse_ms = results["reparse_all"]["median_ms"]
+    if cache_ms > 0:
+        speedup = parse_ms / cache_ms
+        print(f"\n  Speedup: {speedup:.0f}x  (cache={cache_ms:.2f}ms vs parse={parse_ms:.1f}ms)")
+
+    return results
+
+
 def bench_state_backend(
     models: list[ModelDef], tmp_dir: Path
 ) -> dict[str, dict[str, float]]:
@@ -931,9 +1033,10 @@ def main() -> None:
     dc = conn.execute("SELECT COUNT(*) FROM model_dependencies").fetchone()[0]
     print(f"  DB: {mc} models, {cc} columns, {lc} lineage edges, {dc} dep edges")
 
-    # Step 4-5: Benchmark queries
+    # Step 4-6: Benchmark queries
     all_results["simple"] = bench_simple_queries(conn)
     all_results["complex"] = bench_downstream_queries(conn)
+    all_results["cache"] = bench_cache_vs_reparse(conn, models, schema)
     all_results["backend"] = bench_state_backend(models, tmp_root)
     conn.close()
 
@@ -949,7 +1052,7 @@ def main() -> None:
     print(f"  Lineage edges:          {total_edges:>10d}")
 
     for section, label in [("simple", "Simple Query"), ("complex", "Complex Query"),
-                           ("backend", "State Backend")]:
+                           ("cache", "Cache vs Re-parse"), ("backend", "State Backend")]:
         print(f"\n  {label:<35} {'Median ms':>10}")
         print(f"  {'─' * 45}")
         for k, v in all_results[section].items():
