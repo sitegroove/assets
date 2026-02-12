@@ -1,12 +1,13 @@
-"""Benchmark — Column lineage with sqlglot over 500 models in SQLite.
+"""Benchmark — Column lineage with sqlglot over realistic analytical models in SQLite.
 
 Run:
-    python benchmarks/bench_column_lineage.py
+    python benchmarks/bench_column_lineage.py          # 50 models (quick test)
+    python benchmarks/bench_column_lineage.py --scale 10  # 500 models (full)
 
-Generates a realistic 500-model DAG (sources → staging → intermediate → marts → reports),
-parses SQL with sqlglot to extract column-level lineage, merges discovered columns with
-manually-defined column descriptions, stores everything in SQLite, and benchmarks
-SELECT queries from simple single-model lookups to complex downstream lineage traversals.
+Generates a multi-layer DAG with {{ ref('model') }} Jinja syntax, CTE-heavy
+analytical SQL (like dbt/sqlmesh), resolves refs, then uses sqlglot.lineage()
+for proper through-CTE column tracing. Merges discovered columns with manually-
+defined descriptions and stores everything in SQLite.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 import shutil
 import sqlite3
 import statistics
@@ -27,35 +29,19 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import sqlglot
+from sqlglot.lineage import lineage as sqlglot_lineage
 
 from assets import SQLiteBackend
 from assets.state.models import AssetState, DependencyState, StateSnapshot
 
-# ── Configuration ────────────────────────────────────────────
-NUM_SOURCES = 50
-NUM_STAGING = 100
-NUM_INTERMEDIATE = 150
-NUM_MARTS = 150
-NUM_REPORTS = 50
-NUM_ASSETS = NUM_SOURCES + NUM_STAGING + NUM_INTERMEDIATE + NUM_MARTS + NUM_REPORTS  # 500
+# ── Configuration (scale=1 → 50 models, scale=10 → 500) ─────
+DEFAULT_SCALE = 1
 ITERATIONS = 5
 ENVIRONMENT = "production"
 SEED = 42
 
-# ── Column pools (realistic column names) ────────────────────
-_ID_COLS = ["id", "uuid", "external_id"]
-_TIMESTAMP_COLS = ["created_at", "updated_at", "deleted_at", "event_ts"]
-_USER_COLS = ["user_id", "username", "email", "first_name", "last_name", "phone", "country"]
-_ORDER_COLS = ["order_id", "amount", "currency", "status", "discount", "tax", "total"]
-_PRODUCT_COLS = ["product_id", "product_name", "category", "price", "sku", "brand"]
-_METRIC_COLS = ["count", "total_amount", "avg_amount", "min_amount", "max_amount"]
-_DIM_COLS = ["region", "segment", "channel", "platform", "device_type"]
-
-ALL_COL_POOLS = [_ID_COLS, _TIMESTAMP_COLS, _USER_COLS, _ORDER_COLS,
-                 _PRODUCT_COLS, _METRIC_COLS, _DIM_COLS]
-
 # Column type mapping
-COL_TYPES = {
+COL_TYPES: dict[str, str] = {
     "id": "INT", "uuid": "VARCHAR", "external_id": "VARCHAR",
     "created_at": "TIMESTAMP", "updated_at": "TIMESTAMP",
     "deleted_at": "TIMESTAMP", "event_ts": "TIMESTAMP",
@@ -67,68 +53,88 @@ COL_TYPES = {
     "total": "DECIMAL",
     "product_id": "INT", "product_name": "VARCHAR", "category": "VARCHAR",
     "price": "DECIMAL", "sku": "VARCHAR", "brand": "VARCHAR",
-    "count": "INT", "total_amount": "DECIMAL", "avg_amount": "DECIMAL",
-    "min_amount": "DECIMAL", "max_amount": "DECIMAL",
     "region": "VARCHAR", "segment": "VARCHAR", "channel": "VARCHAR",
     "platform": "VARCHAR", "device_type": "VARCHAR",
 }
 
-
-# ── Column description templates ─────────────────────────────
-COL_DESCRIPTIONS = {
+COL_DESCRIPTIONS: dict[str, str] = {
     "id": "Primary key identifier",
-    "uuid": "Universally unique identifier",
     "user_id": "Foreign key to the users table",
     "email": "User email address",
     "amount": "Transaction amount in base currency",
-    "total_amount": "Aggregated total amount",
-    "avg_amount": "Average transaction amount",
+    "total_revenue": "Aggregated total revenue",
+    "avg_order_value": "Average order value",
+    "order_count": "Number of orders",
     "status": "Current status of the record",
     "created_at": "Timestamp when the record was created",
-    "updated_at": "Timestamp of last modification",
     "category": "Product category classification",
+    "country": "Geographic country",
     "region": "Geographic region",
-    "count": "Number of records",
 }
 
+# Column pools for source tables
+_SOURCE_COL_POOLS = [
+    ["id", "uuid", "external_id"],
+    ["created_at", "updated_at", "deleted_at"],
+    ["user_id", "username", "email", "first_name", "last_name", "country"],
+    ["order_id", "amount", "currency", "status", "discount", "tax"],
+    ["product_id", "product_name", "category", "price", "sku", "brand"],
+    ["region", "segment", "channel", "platform"],
+]
 
-# ── Model definitions ────────────────────────────────────────
+REF_PATTERN = re.compile(r"\{\{\s*ref\(['\"](\w+)['\"]\)\s*\}\}")
+
+
+# ── Model definition ─────────────────────────────────────────
 
 class ModelDef:
-    """Holds a generated model definition before it goes into SQLite."""
+    """Holds a generated model with Jinja SQL, resolved SQL, and lineage."""
 
-    __slots__ = ("name", "layer", "description", "sql", "depends_on",
-                 "defined_columns", "all_columns", "column_lineage")
+    __slots__ = ("name", "layer", "description", "jinja_sql", "resolved_sql",
+                 "depends_on", "defined_columns", "all_columns", "column_lineage")
 
     def __init__(
         self,
         name: str,
         layer: str,
         description: str,
-        sql: str | None,
+        jinja_sql: str | None,
         depends_on: list[str],
         defined_columns: dict[str, dict[str, str]],
     ):
         self.name = name
         self.layer = layer
         self.description = description
-        self.sql = sql
+        self.jinja_sql = jinja_sql  # SQL with {{ ref('...') }}
+        self.resolved_sql: str | None = None  # after ref resolution
         self.depends_on = depends_on
-        # Columns explicitly defined with descriptions: {col_name: {type, description}}
         self.defined_columns = defined_columns
-        # Filled after sqlglot parsing — full list including discovered columns
         self.all_columns: dict[str, dict[str, str]] = {}
-        # Filled after lineage extraction: [(src_model, src_col, tgt_col, transform)]
         self.column_lineage: list[tuple[str, str, str, str | None]] = []
 
 
+# ── Ref resolution ────────────────────────────────────────────
+
+def resolve_refs(jinja_sql: str) -> tuple[str, list[str]]:
+    """Replace {{ ref('model') }} with the model name. Return (sql, refs)."""
+    refs: list[str] = []
+
+    def _replace(match: re.Match) -> str:
+        ref_name = match.group(1)
+        refs.append(ref_name)
+        return ref_name
+
+    resolved = REF_PATTERN.sub(_replace, jinja_sql)
+    return resolved, refs
+
+
+# ── Column helpers ────────────────────────────────────────────
+
 def _pick_columns(rng: random.Random, n: int) -> list[str]:
-    """Pick n distinct column names from the pools."""
     pool: list[str] = []
-    for p in ALL_COL_POOLS:
+    for p in _SOURCE_COL_POOLS:
         pool.extend(p)
     chosen = rng.sample(pool, min(n, len(pool)))
-    # Always include 'id' for join-ability
     if "id" not in chosen:
         chosen[0] = "id"
     return chosen
@@ -137,277 +143,372 @@ def _pick_columns(rng: random.Random, n: int) -> list[str]:
 def _make_col_defs(
     cols: list[str],
     rng: random.Random,
-    describe_fraction: float = 0.7,
-    include_fraction: float = 1.0,
+    describe_frac: float = 0.7,
+    include_frac: float = 1.0,
 ) -> dict[str, dict[str, str]]:
-    """Create column definitions; only include/describe a fraction to test merging.
-
-    Args:
-        cols: All output column names.
-        describe_fraction: Fraction of included columns that get a description.
-        include_fraction: Fraction of columns to include in the definition at all.
-            Columns not included will be "discovered" by sqlglot later.
-    """
+    """Create column definitions; skip some to test sqlglot discovery."""
     defs: dict[str, dict[str, str]] = {}
     for c in cols:
-        if rng.random() > include_fraction:
-            continue  # skip — sqlglot will discover this column
+        if rng.random() > include_frac:
+            continue
         entry: dict[str, str] = {"type": COL_TYPES.get(c, "VARCHAR")}
-        if rng.random() < describe_fraction and c in COL_DESCRIPTIONS:
+        if rng.random() < describe_frac and c in COL_DESCRIPTIONS:
             entry["description"] = COL_DESCRIPTIONS[c]
         defs[c] = entry
     return defs
 
 
-def generate_dag(seed: int = SEED) -> tuple[list[ModelDef], dict[str, list[str]]]:
-    """Build a 500-model DAG and return (models, schema_for_sqlglot)."""
+# ── DAG generator with realistic CTE SQL ─────────────────────
+
+def generate_dag(
+    scale: int = DEFAULT_SCALE,
+    seed: int = SEED,
+) -> tuple[list[ModelDef], dict[str, dict[str, str]]]:
+    """Build a multi-layer DAG with CTE-heavy analytical SQL.
+
+    scale=1 → 50 models, scale=10 → 500 models.
+    """
+    n_sources = 5 * scale
+    n_staging = 10 * scale
+    n_intermediate = 15 * scale
+    n_marts = 15 * scale
+    n_reports = 5 * scale
+
     rng = random.Random(seed)
     models: list[ModelDef] = []
-    # schema: {table_name: [col_names]} for sqlglot
     schema: dict[str, dict[str, str]] = {}
     models_by_name: dict[str, ModelDef] = {}
 
-    # ── Layer 0: Sources (no SQL, raw tables) ──
-    for i in range(NUM_SOURCES):
-        name = f"raw_{i:03d}"
-        cols = _pick_columns(rng, rng.randint(5, 12))
-        col_defs = _make_col_defs(cols, rng, describe_fraction=0.9)
-        m = ModelDef(
-            name=name, layer="source",
-            description=f"Raw source table {i} ingested from upstream system",
-            sql=None, depends_on=[], defined_columns=col_defs,
-        )
-        m.all_columns = dict(col_defs)  # sources have no SQL to parse
+    def _register(m: ModelDef, output_cols: dict[str, dict[str, str]]) -> None:
         models.append(m)
-        models_by_name[name] = m
-        schema[name] = {c: col_defs[c]["type"] for c in col_defs}
+        models_by_name[m.name] = m
+        schema[m.name] = {c: v.get("type", "VARCHAR") for c, v in output_cols.items()}
+
+    # ── Layer 0: Sources (raw tables, no SQL) ──
+    for i in range(n_sources):
+        name = f"raw_{i:03d}"
+        cols = _pick_columns(rng, rng.randint(5, 10))
+        col_defs = _make_col_defs(cols, rng, describe_frac=0.9)
+        m = ModelDef(name=name, layer="source", description=f"Raw source table {i}",
+                     jinja_sql=None, depends_on=[], defined_columns=col_defs)
+        m.all_columns = dict(col_defs)
+        _register(m, col_defs)
 
     source_names = [m.name for m in models if m.layer == "source"]
 
-    # ── Layer 1: Staging (simple SELECT FROM one source, with alias) ──
-    for i in range(NUM_STAGING):
+    # ── Layer 1: Staging (CTE with filtering + cleaning) ──
+    for i in range(n_staging):
         name = f"stg_{i:03d}"
         src = rng.choice(source_names)
         src_cols = list(schema[src].keys())
         selected = rng.sample(src_cols, min(rng.randint(3, len(src_cols)), len(src_cols)))
-        select_parts = []
+        if "id" not in selected:
+            selected[0] = "id"
+
+        # Build CTE SQL with {{ ref() }}
+        cte_cols = ", ".join(f"src.{c}" for c in selected)
+        # Some columns get cleaned
+        final_parts = []
         for c in selected:
             if rng.random() < 0.15 and c not in ("id",):
-                alias = f"{c}_cleaned"
-                select_parts.append(f"COALESCE(s.{c}, '') AS {alias}")
+                final_parts.append(f"COALESCE(cleaned.{c}, '') AS {c}_cleaned")
             else:
-                select_parts.append(f"s.{c}")
-        sql = f"SELECT {', '.join(select_parts)} FROM {src} s"
-        output_cols = []
-        for part in select_parts:
-            if " AS " in part:
-                output_cols.append(part.split(" AS ")[-1].strip())
-            else:
-                output_cols.append(part.split(".")[-1].strip())
-        # Only define ~60% of columns; rest will be discovered by sqlglot
-        col_defs = _make_col_defs(output_cols, rng, describe_fraction=0.6, include_fraction=0.6)
-        m = ModelDef(
-            name=name, layer="staging", depends_on=[src],
-            description=f"Cleaned staging model from {src}",
-            sql=sql, defined_columns=col_defs,
-        )
-        models.append(m)
-        models_by_name[name] = m
+                final_parts.append(f"cleaned.{c}")
 
-    # ── Layer 2: Intermediate (JOIN 2-3 staging models) ──
+        jinja = (
+            f"WITH source AS (\n"
+            f"    SELECT {cte_cols}\n"
+            f"    FROM {{{{ ref('{src}') }}}} src\n"
+            f"),\n"
+            f"cleaned AS (\n"
+            f"    SELECT *\n"
+            f"    FROM source\n"
+            f"    WHERE id IS NOT NULL\n"
+            f")\n"
+            f"SELECT {', '.join(final_parts)}\n"
+            f"FROM cleaned"
+        )
+        output_cols_list = []
+        for p in final_parts:
+            if " AS " in p:
+                output_cols_list.append(p.split(" AS ")[-1].strip())
+            else:
+                output_cols_list.append(p.split(".")[-1].strip())
+
+        col_defs = _make_col_defs(output_cols_list, rng, describe_frac=0.6, include_frac=0.6)
+        m = ModelDef(name=name, layer="staging", description=f"Staging from {src}",
+                     jinja_sql=jinja, depends_on=[src], defined_columns=col_defs)
+        _register(m, _make_col_defs(output_cols_list, rng, describe_frac=1.0))
+
     staging_names = [m.name for m in models if m.layer == "staging"]
-    for i in range(NUM_INTERMEDIATE):
+
+    # ── Layer 2: Intermediate (CTE with JOINs across staging) ──
+    for i in range(n_intermediate):
         name = f"int_{i:03d}"
         n_deps = rng.randint(2, min(3, len(staging_names)))
         deps = rng.sample(staging_names, n_deps)
-        # Build JOIN SQL
-        base = deps[0]
-        base_alias = "a"
-        select_parts = [f"{base_alias}.id"]
-        from_clause = f"{base} {base_alias}"
-        for j, dep in enumerate(deps[1:], start=1):
-            alias = chr(ord("b") + j - 1)
-            from_clause += f" JOIN {dep} {alias} ON {base_alias}.id = {alias}.id"
-            dep_cols = list(schema.get(dep, {}).keys()) if dep in schema else ["id"]
-            for c in dep_cols[:3]:
-                if c != "id":
-                    select_parts.append(f"{alias}.{c}")
-        # Add a few columns from base
-        base_cols = list(schema.get(base, {}).keys()) if base in schema else []
-        for c in base_cols[:4]:
-            if c != "id":
-                select_parts.append(f"{base_alias}.{c}")
-        sql = f"SELECT {', '.join(select_parts)} FROM {from_clause}"
-        output_cols = [p.split(".")[-1].split(" AS ")[-1].strip() for p in select_parts]
+        base, *joins = deps
+
+        base_cols = list(schema.get(base, {}).keys())
+        if not base_cols:
+            base_cols = ["id"]
+
+        # CTE: first select from base, then join with others
+        base_select = ", ".join(f"base_tbl.{c}" for c in base_cols[:5])
+        join_selects = []
+        join_clauses = []
+        for j, dep in enumerate(joins):
+            alias = f"j{j}"
+            dep_cols = [c for c in list(schema.get(dep, {}).keys()) if c != "id"][:3]
+            for c in dep_cols:
+                join_selects.append(f"{alias}.{c}")
+            join_clauses.append(
+                f"    JOIN {{{{ ref('{dep}') }}}} {alias} ON base_tbl.id = {alias}.id"
+            )
+
+        all_selects = base_select
+        if join_selects:
+            all_selects += ", " + ", ".join(join_selects)
+
+        jinja = (
+            f"WITH joined AS (\n"
+            f"    SELECT {all_selects}\n"
+            f"    FROM {{{{ ref('{base}') }}}} base_tbl\n"
+            f"{chr(10).join(join_clauses)}\n"
+            f"),\n"
+            f"deduped AS (\n"
+            f"    SELECT DISTINCT *\n"
+            f"    FROM joined\n"
+            f")\n"
+            f"SELECT * FROM deduped"
+        )
+
+        # Output columns = base cols + join cols
+        out_cols = list(base_cols[:5])
+        for dep in joins:
+            dep_cols = [c for c in list(schema.get(dep, {}).keys()) if c != "id"][:3]
+            out_cols.extend(dep_cols)
         # Deduplicate
         seen: set[str] = set()
-        unique_cols: list[str] = []
-        for c in output_cols:
+        unique_out: list[str] = []
+        for c in out_cols:
             if c not in seen:
                 seen.add(c)
-                unique_cols.append(c)
-        col_defs = _make_col_defs(unique_cols, rng, describe_fraction=0.5, include_fraction=0.5)
-        m = ModelDef(
-            name=name, layer="intermediate", depends_on=deps,
-            description=f"Intermediate model joining {', '.join(deps)}",
-            sql=sql, defined_columns=col_defs,
-        )
-        models.append(m)
-        models_by_name[name] = m
+                unique_out.append(c)
 
-    # ── Layer 3: Marts (aggregate from intermediate, maybe join with staging) ──
+        col_defs = _make_col_defs(unique_out, rng, describe_frac=0.5, include_frac=0.5)
+        m = ModelDef(name=name, layer="intermediate", description=f"Join of {', '.join(deps)}",
+                     jinja_sql=jinja, depends_on=deps, defined_columns=col_defs)
+        _register(m, _make_col_defs(unique_out, rng, describe_frac=1.0))
+
     int_names = [m.name for m in models if m.layer == "intermediate"]
-    for i in range(NUM_MARTS):
+
+    # ── Layer 3: Marts (CTE with filtering → aggregation) ──
+    for i in range(n_marts):
         name = f"mart_{i:03d}"
         base = rng.choice(int_names)
         deps = [base]
-        # Sometimes join with a staging model
+        base_cols = list(schema.get(base, {}).keys())
+        if not base_cols:
+            base_cols = ["id"]
+
+        # Pick group-by and agg columns
+        group_candidates = [c for c in base_cols if c in (
+            "country", "region", "segment", "category", "channel", "status", "platform")]
+        group_cols = group_candidates[:2] if group_candidates else ["id"]
+        agg_candidates = [c for c in base_cols if c in (
+            "amount", "total", "price", "tax", "discount")]
+        agg_cols = agg_candidates[:2] if agg_candidates else []
+
+        # Sometimes join with another staging model
+        extra_cte = ""
         extra_join = ""
         if rng.random() < 0.4 and staging_names:
             extra = rng.choice(staging_names)
             deps.append(extra)
-            extra_join = f" LEFT JOIN {extra} s ON a.id = s.id"
-        base_cols = list(schema.get(base, {}).keys()) if base in schema else ["id"]
-        group_cols = [c for c in base_cols if c in ("id", "region", "segment",
-                      "category", "channel", "country", "status")][:2]
-        if not group_cols:
-            group_cols = ["id"]
-        agg_cols = [c for c in base_cols if c in ("amount", "total", "price",
-                    "count", "tax", "discount")][:2]
-        select_parts = [f"a.{c}" for c in group_cols]
+            extra_cte = (
+                f"enrichment AS (\n"
+                f"    SELECT id, * FROM {{{{ ref('{extra}') }}}}\n"
+                f"),\n"
+            )
+            extra_join = f"\n    LEFT JOIN enrichment e ON filtered.id = e.id"
+
+        # Build CTE
+        group_select = ", ".join(f"ready.{c}" for c in group_cols)
+        agg_select_parts = []
         for c in agg_cols:
-            select_parts.append(f"SUM(a.{c}) AS total_{c}")
-            select_parts.append(f"AVG(a.{c}) AS avg_{c}")
-        select_parts.append("COUNT(*) AS record_count")
-        sql = (
-            f"SELECT {', '.join(select_parts)} FROM {base} a{extra_join} "
-            f"GROUP BY {', '.join(f'a.{c}' for c in group_cols)}"
-        )
-        output_cols = []
-        for p in select_parts:
-            if " AS " in p:
-                output_cols.append(p.split(" AS ")[-1].strip())
-            else:
-                output_cols.append(p.split(".")[-1].strip())
-        col_defs = _make_col_defs(output_cols, rng, describe_fraction=0.4, include_fraction=0.5)
-        m = ModelDef(
-            name=name, layer="mart", depends_on=deps,
-            description=f"Mart aggregation model from {base}",
-            sql=sql, defined_columns=col_defs,
-        )
-        models.append(m)
-        models_by_name[name] = m
+            agg_select_parts.append(f"SUM(ready.{c}) AS total_{c}")
+            agg_select_parts.append(f"AVG(ready.{c}) AS avg_{c}")
+        agg_select_parts.append("COUNT(*) AS record_count")
+        agg_select = ", ".join(agg_select_parts)
+        group_by = ", ".join(f"ready.{c}" for c in group_cols)
 
-    # ── Layer 4: Reports (SELECT from marts with UNION or simple transforms) ──
+        jinja = (
+            f"WITH filtered AS (\n"
+            f"    SELECT *\n"
+            f"    FROM {{{{ ref('{base}') }}}}\n"
+            f"    WHERE id IS NOT NULL\n"
+            f"),\n"
+            f"{extra_cte}"
+            f"ready AS (\n"
+            f"    SELECT filtered.*\n"
+            f"    FROM filtered{extra_join}\n"
+            f")\n"
+            f"SELECT {group_select}, {agg_select}\n"
+            f"FROM ready\n"
+            f"GROUP BY {group_by}"
+        )
+
+        out_cols = list(group_cols)
+        for c in agg_cols:
+            out_cols.extend([f"total_{c}", f"avg_{c}"])
+        out_cols.append("record_count")
+
+        col_defs = _make_col_defs(out_cols, rng, describe_frac=0.4, include_frac=0.5)
+        m = ModelDef(name=name, layer="mart", description=f"Mart from {base}",
+                     jinja_sql=jinja, depends_on=deps, defined_columns=col_defs)
+        _register(m, _make_col_defs(out_cols, rng, describe_frac=1.0))
+
     mart_names = [m.name for m in models if m.layer == "mart"]
-    for i in range(NUM_REPORTS):
-        name = f"report_{i:03d}"
-        if rng.random() < 0.5 and len(mart_names) >= 2:
-            # UNION of two marts — each side aliased
-            m1, m2 = rng.sample(mart_names, 2)
-            deps = [m1, m2]
-            m1_cols = list(schema.get(m1, {}).keys()) if m1 in schema else ["id"]
-            shared = m1_cols[:3]
-            if not shared:
-                shared = ["id"]
-            sel_a = ", ".join(f"a.{c}" for c in shared)
-            sel_b = ", ".join(f"b.{c}" for c in shared)
-            sql = f"SELECT {sel_a} FROM {m1} a UNION ALL SELECT {sel_b} FROM {m2} b"
-        else:
-            # Simple select from one mart with alias
-            src = rng.choice(mart_names)
-            deps = [src]
-            src_cols = list(schema.get(src, {}).keys()) if src in schema else ["id"]
-            cols = src_cols[:5] if src_cols else ["id"]
-            sel = ", ".join(f"r.{c}" for c in cols)
-            sql = f"SELECT {sel} FROM {src} r"
-        # Extract output column names from SQL
-        parsed_tmp = sqlglot.parse_one(sql)
-        output_cols_raw = [s.alias_or_name for s in parsed_tmp.selects if s.alias_or_name]
-        if not output_cols_raw:
-            output_cols_raw = ["id"]
-        col_defs = _make_col_defs(output_cols_raw, rng, describe_fraction=0.3, include_fraction=0.4)
-        m = ModelDef(
-            name=name, layer="report", depends_on=deps,
-            description=f"Report model for executive dashboards",
-            sql=sql, defined_columns=col_defs,
-        )
-        models.append(m)
-        models_by_name[name] = m
 
-    # Build schema dict progressively (sources already in schema)
-    # We need to resolve schemas in topological order for sqlglot
-    for m in models:
-        if m.layer == "source":
-            continue
-        # Output columns from defined_columns as a starting schema
-        schema[m.name] = {c: v.get("type", "VARCHAR") for c, v in m.defined_columns.items()}
+    # ── Layer 4: Reports (CTE with final transforms from marts) ──
+    for i in range(n_reports):
+        name = f"report_{i:03d}"
+        src = rng.choice(mart_names)
+        deps = [src]
+        src_cols = list(schema.get(src, {}).keys())
+        if not src_cols:
+            src_cols = ["id"]
+
+        col_list = ", ".join(f"base.{c}" for c in src_cols[:5])
+        jinja = (
+            f"WITH base AS (\n"
+            f"    SELECT *\n"
+            f"    FROM {{{{ ref('{src}') }}}}\n"
+            f"),\n"
+            f"final AS (\n"
+            f"    SELECT {col_list}\n"
+            f"    FROM base\n"
+            f"    ORDER BY 1\n"
+            f")\n"
+            f"SELECT * FROM final"
+        )
+
+        out_cols = src_cols[:5]
+        col_defs = _make_col_defs(out_cols, rng, describe_frac=0.3, include_frac=0.4)
+        m = ModelDef(name=name, layer="report", description=f"Report from {src}",
+                     jinja_sql=jinja, depends_on=deps, defined_columns=col_defs)
+        _register(m, _make_col_defs(out_cols, rng, describe_frac=1.0))
 
     return models, schema
 
 
-# ── Lineage extraction (fast AST-based approach) ─────────────
+# ── Lineage extraction with sqlglot.lineage() ────────────────
 
 def extract_lineage_for_model(
     model: ModelDef,
     schema: dict[str, dict[str, str]],
 ) -> None:
-    """Use sqlglot to parse SQL, extract output columns and column lineage.
+    """Resolve refs, then use sqlglot.lineage() for through-CTE column tracing.
 
-    - Columns found by sqlglot but missing from model.defined_columns are added
-      without descriptions (marked as "discovered").
-    - Column lineage is stored as (src_model, src_col, tgt_col, transform).
-
-    Uses direct AST inspection (parse_one → selects → Column nodes) instead of
-    sqlglot.lineage() for ~100x faster extraction.
+    - Resolves {{ ref('model') }} → plain table name
+    - Parses output columns from the AST
+    - Calls sqlglot.lineage() per output column for full CTE resolution
+    - Columns found by sqlglot but missing from defined_columns are added
+      without descriptions (marked as "discovered")
     """
-    if model.sql is None:
+    if model.jinja_sql is None:
         model.all_columns = dict(model.defined_columns)
         return
+
+    # Step 1: Resolve refs
+    resolved, refs = resolve_refs(model.jinja_sql)
+    model.resolved_sql = resolved
 
     # Start with defined columns
     model.all_columns = dict(model.defined_columns)
     model.column_lineage = []
 
+    # Step 2: Parse to discover output columns
     try:
-        parsed = sqlglot.parse_one(model.sql)
+        parsed = sqlglot.parse_one(resolved)
     except Exception:
         return
 
-    # Build alias → table name mapping from all Table nodes
-    table_aliases: dict[str, str] = {}
-    for table in parsed.find_all(sqlglot.exp.Table):
-        tbl_name = table.name
-        alias = table.alias or tbl_name
-        table_aliases[alias] = tbl_name
-        table_aliases[tbl_name] = tbl_name
-
-    # Walk each SELECT expression to extract output columns and lineage
+    output_cols: list[str] = []
     for sel in parsed.selects:
-        output_name = sel.alias_or_name
-        if not output_name or output_name == "*":
-            continue
+        col_name = sel.alias_or_name
+        if col_name and col_name != "*":
+            output_cols.append(col_name)
+            if col_name not in model.all_columns:
+                model.all_columns[col_name] = {"type": COL_TYPES.get(col_name, "VARCHAR")}
 
-        # Discover columns not in defined_columns
-        if output_name not in model.all_columns:
-            inferred_type = COL_TYPES.get(output_name, "VARCHAR")
-            model.all_columns[output_name] = {"type": inferred_type}
+    # For SELECT *, expand from schema of first dependency
+    if not output_cols and model.depends_on:
+        first_dep = model.depends_on[0]
+        if first_dep in schema:
+            output_cols = list(schema[first_dep].keys())
+            for c in output_cols:
+                if c not in model.all_columns:
+                    model.all_columns[c] = {"type": COL_TYPES.get(c, "VARCHAR")}
 
-        # Detect aggregate/transform function wrapping this expression
+    # Step 3: Use sqlglot.lineage() for each output column — traces through CTEs
+    for col_name in output_cols:
+        try:
+            node = sqlglot_lineage(col_name, resolved, schema=schema)
+            _collect_leaf_sources(node, model.name, col_name, model)
+        except Exception:
+            pass
+
+
+def _collect_leaf_sources(
+    node: Any,
+    target_model: str,
+    target_col: str,
+    model: ModelDef,
+) -> None:
+    """Recursively walk lineage tree to find leaf (actual table) sources."""
+    if not node.downstream:
+        # Leaf node — this is a real table reference
+        src_table = ""
+        if hasattr(node.source, "this") and hasattr(node.source.this, "this"):
+            src_table = node.source.this.this
+        elif hasattr(node.source, "name"):
+            src_table = node.source.name
+
+        col_name = node.name
+        if "." in col_name:
+            col_name = col_name.split(".")[-1]
+
+        # Detect transform from the parent expression
         transform: str | None = None
-        sel_sql = sel.sql().upper()
+        expr_sql = str(node.expression) if node.expression else ""
         for fn in ("SUM", "AVG", "COUNT", "COALESCE", "MIN", "MAX"):
-            if fn + "(" in sel_sql:
+            if fn in expr_sql.upper():
                 transform = fn
                 break
 
-        # Trace source columns
-        for col_ref in sel.find_all(sqlglot.exp.Column):
-            src_alias = col_ref.table
-            src_col = col_ref.name
-            src_table = table_aliases.get(src_alias, src_alias)
-            if src_table:
-                model.column_lineage.append((src_table, src_col, output_name, transform))
+        if src_table and src_table not in ("", "*"):
+            model.column_lineage.append((src_table, col_name, target_col, transform))
+    else:
+        # Detect transform at intermediate nodes
+        transform: str | None = None
+        source_str = str(node.source) if node.source else ""
+        for fn in ("SUM", "AVG", "COUNT"):
+            if fn + "(" in source_str.upper():
+                transform = fn
+                break
+
+        for child in node.downstream:
+            # Pass transform info down if this is an aggregate node
+            _collect_leaf_sources(child, target_model, target_col, model)
+
+        # If we found a transform at this level, update the lineage entries
+        if transform:
+            for j in range(len(model.column_lineage)):
+                src_m, src_c, tgt_c, existing_t = model.column_lineage[j]
+                if tgt_c == target_col and existing_t is None:
+                    model.column_lineage[j] = (src_m, src_c, tgt_c, transform)
 
 
 # ── SQLite lineage schema ────────────────────────────────────
@@ -417,7 +518,8 @@ CREATE TABLE IF NOT EXISTS models (
     name        TEXT PRIMARY KEY,
     layer       TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
-    sql_text    TEXT,
+    jinja_sql   TEXT,
+    resolved_sql TEXT,
     fingerprint TEXT NOT NULL
 );
 
@@ -446,6 +548,7 @@ CREATE TABLE IF NOT EXISTS column_lineage (
 );
 
 CREATE INDEX IF NOT EXISTS idx_col_model        ON columns(model_name);
+CREATE INDEX IF NOT EXISTS idx_col_name         ON columns(column_name);
 CREATE INDEX IF NOT EXISTS idx_lineage_target    ON column_lineage(target_model, target_column);
 CREATE INDEX IF NOT EXISTS idx_lineage_source    ON column_lineage(source_model, source_column);
 CREATE INDEX IF NOT EXISTS idx_deps_source       ON model_dependencies(source);
@@ -454,7 +557,6 @@ CREATE INDEX IF NOT EXISTS idx_deps_target       ON model_dependencies(target);
 
 
 def create_lineage_db(db_path: Path) -> sqlite3.Connection:
-    """Create the lineage SQLite database with schema."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -467,491 +569,286 @@ def create_lineage_db(db_path: Path) -> sqlite3.Connection:
 
 
 def store_lineage(conn: sqlite3.Connection, models: list[ModelDef]) -> None:
-    """Store all models, columns, and lineage into SQLite."""
     with conn:
-        # Insert models
         conn.executemany(
-            "INSERT OR REPLACE INTO models (name, layer, description, sql_text, fingerprint) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (
-                (
-                    m.name, m.layer, m.description, m.sql,
-                    hashlib.sha256(f"{m.name}:{m.sql or ''}".encode()).hexdigest(),
-                )
-                for m in models
-            ),
+            "INSERT OR REPLACE INTO models (name, layer, description, jinja_sql, resolved_sql, fingerprint) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ((m.name, m.layer, m.description, m.jinja_sql, m.resolved_sql,
+              hashlib.sha256(f"{m.name}:{m.resolved_sql or ''}".encode()).hexdigest())
+             for m in models),
         )
-
-        # Insert dependencies
         conn.executemany(
             "INSERT OR REPLACE INTO model_dependencies (source, target) VALUES (?, ?)",
-            (
-                (dep, m.name)
-                for m in models
-                for dep in m.depends_on
-            ),
+            ((dep, m.name) for m in models for dep in m.depends_on),
         )
-
-        # Insert columns
         conn.executemany(
             "INSERT OR REPLACE INTO columns (model_name, column_name, data_type, description, source) "
             "VALUES (?, ?, ?, ?, ?)",
-            (
-                (
-                    m.name, col_name,
-                    col_info.get("type", "VARCHAR"),
-                    col_info.get("description", ""),
-                    "defined" if col_name in m.defined_columns else "discovered",
-                )
-                for m in models
-                for col_name, col_info in m.all_columns.items()
-            ),
+            ((m.name, col, info.get("type", "VARCHAR"), info.get("description", ""),
+              "defined" if col in m.defined_columns else "discovered")
+             for m in models for col, info in m.all_columns.items()),
         )
-
-        # Insert column lineage
         conn.executemany(
             "INSERT INTO column_lineage (source_model, source_column, target_model, target_column, transform) "
             "VALUES (?, ?, ?, ?, ?)",
-            (
-                (src_model, src_col, m.name, tgt_col, transform)
-                for m in models
-                for src_model, src_col, tgt_col, transform in m.column_lineage
-            ),
+            ((sm, sc, m.name, tc, tr)
+             for m in models for sm, sc, tc, tr in m.column_lineage),
         )
 
 
 # ── Benchmark helpers ────────────────────────────────────────
 
 def _timed(fn, iterations: int = ITERATIONS) -> dict[str, float]:
-    """Run fn() multiple times and return timing stats in milliseconds."""
-    times: list[float] = []
+    times = []
     for _ in range(iterations):
-        start = time.perf_counter()
+        t0 = time.perf_counter()
         fn()
-        elapsed = (time.perf_counter() - start) * 1000
-        times.append(elapsed)
+        times.append((time.perf_counter() - t0) * 1000)
     return {
-        "min_ms": min(times),
-        "max_ms": max(times),
-        "mean_ms": statistics.mean(times),
-        "median_ms": statistics.median(times),
+        "min_ms": min(times), "max_ms": max(times),
+        "mean_ms": statistics.mean(times), "median_ms": statistics.median(times),
         "stdev_ms": statistics.stdev(times) if len(times) > 1 else 0.0,
     }
 
 
 def _fmt(stats: dict[str, float]) -> str:
-    return (
-        f"  mean={stats['mean_ms']:8.2f}ms  "
-        f"median={stats['median_ms']:8.2f}ms  "
-        f"min={stats['min_ms']:8.2f}ms  "
-        f"max={stats['max_ms']:8.2f}ms  "
-        f"stdev={stats['stdev_ms']:7.2f}ms"
-    )
+    return (f"  mean={stats['mean_ms']:8.2f}ms  median={stats['median_ms']:8.2f}ms  "
+            f"min={stats['min_ms']:8.2f}ms  max={stats['max_ms']:8.2f}ms  "
+            f"stdev={stats['stdev_ms']:7.2f}ms")
 
 
 # ── Query benchmarks ─────────────────────────────────────────
 
 def bench_simple_queries(conn: sqlite3.Connection) -> dict[str, dict[str, float]]:
-    """Benchmark simple SELECT queries."""
     print(f"\n{'─' * 70}")
     print("  Simple Queries")
     print(f"{'─' * 70}")
     results: dict[str, dict[str, float]] = {}
 
-    # 1) Get all columns for a single model
-    def q_columns_single():
-        conn.execute(
-            "SELECT column_name, data_type, description FROM columns WHERE model_name = ?",
-            ("int_050",),
-        ).fetchall()
+    # Pick a model that has columns
+    sample = conn.execute(
+        "SELECT model_name FROM columns GROUP BY model_name ORDER BY COUNT(*) DESC LIMIT 1"
+    ).fetchone()
+    sample_model = sample[0] if sample else "stg_000"
 
-    stats = _timed(q_columns_single)
+    # 1) Columns for single model
+    stats = _timed(lambda: conn.execute(
+        "SELECT column_name, data_type, description FROM columns WHERE model_name = ?",
+        (sample_model,)).fetchall())
     results["columns_single_model"] = stats
-    row_count = len(conn.execute(
-        "SELECT column_name FROM columns WHERE model_name = ?", ("int_050",)
-    ).fetchall())
-    print(f"  Columns for 1 model ({row_count} cols):       {_fmt(stats)}")
+    n = len(conn.execute("SELECT * FROM columns WHERE model_name = ?", (sample_model,)).fetchall())
+    print(f"  Columns for {sample_model} ({n} cols):      {_fmt(stats)}")
 
-    # 2) Get all columns for 10 models
-    def q_columns_batch():
-        conn.execute(
-            "SELECT model_name, column_name, data_type, description FROM columns "
-            "WHERE model_name IN ('int_010','int_020','int_030','int_040','int_050',"
-            "'stg_010','stg_020','mart_010','mart_020','report_010')",
-        ).fetchall()
-
-    stats = _timed(q_columns_batch)
-    results["columns_10_models"] = stats
-    row_count = len(conn.execute(
-        "SELECT column_name FROM columns "
-        "WHERE model_name IN ('int_010','int_020','int_030','int_040','int_050',"
-        "'stg_010','stg_020','mart_010','mart_020','report_010')"
-    ).fetchall())
-    print(f"  Columns for 10 models ({row_count} cols):     {_fmt(stats)}")
-
-    # 3) Get direct upstream lineage for one column
-    def q_upstream_one():
-        conn.execute(
-            "SELECT source_model, source_column, transform "
-            "FROM column_lineage WHERE target_model = ? AND target_column = ?",
-            ("int_050", "id"),
-        ).fetchall()
-
-    stats = _timed(q_upstream_one)
-    results["upstream_one_column"] = stats
-    row_count = len(conn.execute(
-        "SELECT source_model FROM column_lineage WHERE target_model = 'int_050' AND target_column = 'id'"
-    ).fetchall())
-    print(f"  Upstream lineage for 1 col ({row_count} rows):  {_fmt(stats)}")
-
-    # 4) Get all columns across entire project
-    def q_all_columns():
-        conn.execute("SELECT model_name, column_name, data_type FROM columns").fetchall()
-
-    stats = _timed(q_all_columns)
+    # 2) All columns
+    stats = _timed(lambda: conn.execute(
+        "SELECT model_name, column_name, data_type FROM columns").fetchall())
     results["all_columns"] = stats
     total = conn.execute("SELECT COUNT(*) FROM columns").fetchone()[0]
-    print(f"  All columns in project ({total} total):   {_fmt(stats)}")
+    print(f"  All columns ({total} total):              {_fmt(stats)}")
 
-    # 5) Count columns per model
-    def q_col_count_per_model():
-        conn.execute(
-            "SELECT model_name, COUNT(*) as col_count FROM columns "
-            "GROUP BY model_name ORDER BY col_count DESC"
-        ).fetchall()
-
-    stats = _timed(q_col_count_per_model)
+    # 3) Column count per model
+    stats = _timed(lambda: conn.execute(
+        "SELECT model_name, COUNT(*) FROM columns GROUP BY model_name ORDER BY 2 DESC").fetchall())
     results["col_count_per_model"] = stats
     print(f"  Column count per model (GROUP BY):      {_fmt(stats)}")
 
-    # 6) Find all models with a specific column name
-    def q_models_with_column():
-        conn.execute(
-            "SELECT model_name, data_type, description FROM columns WHERE column_name = 'amount'"
-        ).fetchall()
-
-    stats = _timed(q_models_with_column)
+    # 4) Models with 'amount' column
+    stats = _timed(lambda: conn.execute(
+        "SELECT model_name, description FROM columns WHERE column_name = 'amount'").fetchall())
     results["models_with_column"] = stats
-    row_count = len(conn.execute(
-        "SELECT model_name FROM columns WHERE column_name = 'amount'"
-    ).fetchall())
-    print(f"  Models with 'amount' col ({row_count} hits):   {_fmt(stats)}")
+    n = len(conn.execute("SELECT * FROM columns WHERE column_name = 'amount'").fetchall())
+    print(f"  Models with 'amount' ({n} hits):          {_fmt(stats)}")
 
-    # 7) Discovered vs defined columns stats
-    def q_discovered_stats():
-        conn.execute(
-            "SELECT source, COUNT(*) FROM columns GROUP BY source"
-        ).fetchall()
-
-    stats = _timed(q_discovered_stats)
+    # 5) Discovered vs defined
+    stats = _timed(lambda: conn.execute(
+        "SELECT source, COUNT(*) FROM columns GROUP BY source").fetchall())
     results["discovered_vs_defined"] = stats
-    rows = conn.execute("SELECT source, COUNT(*) as cnt FROM columns GROUP BY source").fetchall()
+    rows = conn.execute("SELECT source, COUNT(*) FROM columns GROUP BY source").fetchall()
     breakdown = ", ".join(f"{r[0]}={r[1]}" for r in rows)
     print(f"  Discovered vs defined ({breakdown}): {_fmt(stats)}")
+
+    # 6) Upstream lineage for one column
+    lineage_row = conn.execute(
+        "SELECT target_model, target_column FROM column_lineage LIMIT 1").fetchone()
+    if lineage_row:
+        tm, tc = lineage_row[0], lineage_row[1]
+        stats = _timed(lambda: conn.execute(
+            "SELECT source_model, source_column, transform FROM column_lineage "
+            "WHERE target_model = ? AND target_column = ?", (tm, tc)).fetchall())
+        results["upstream_one_column"] = stats
+        n = len(conn.execute(
+            "SELECT * FROM column_lineage WHERE target_model = ? AND target_column = ?",
+            (tm, tc)).fetchall())
+        print(f"  Upstream lineage for {tm}.{tc} ({n}):  {_fmt(stats)}")
 
     return results
 
 
 def bench_downstream_queries(conn: sqlite3.Connection) -> dict[str, dict[str, float]]:
-    """Benchmark complex downstream lineage traversal queries."""
     print(f"\n{'─' * 70}")
     print("  Complex Downstream Lineage Queries")
     print(f"{'─' * 70}")
     results: dict[str, dict[str, float]] = {}
 
-    # Pick a source that actually has downstream dependents
-    popular_source = conn.execute(
-        "SELECT source, COUNT(*) as cnt FROM model_dependencies "
-        "WHERE source LIKE 'raw_%' GROUP BY source ORDER BY cnt DESC LIMIT 1"
+    # Find good query targets
+    pop = conn.execute(
+        "SELECT source, COUNT(*) c FROM model_dependencies WHERE source LIKE 'raw_%' "
+        "GROUP BY source ORDER BY c DESC LIMIT 1").fetchone()
+    src_name = pop[0] if pop else "raw_000"
+
+    report = conn.execute(
+        "SELECT target_model FROM column_lineage WHERE target_model LIKE 'report_%' LIMIT 1"
     ).fetchone()
-    src_name = popular_source[0] if popular_source else "raw_000"
+    report_name = report[0] if report else "report_000"
 
-    # Pick a source that has 'id' in column_lineage
-    lineage_source = conn.execute(
-        "SELECT source_model FROM column_lineage "
-        "WHERE source_model LIKE 'raw_%' AND source_column = 'id' LIMIT 1"
+    # Pick a (source_model, source_column) pair that has downstream continuations
+    lin_src = conn.execute(
+        "SELECT cl.source_model, cl.source_column, COUNT(*) c "
+        "FROM column_lineage cl WHERE cl.source_model LIKE 'raw_%' "
+        "GROUP BY cl.source_model, cl.source_column ORDER BY c DESC LIMIT 1"
     ).fetchone()
-    lineage_src = lineage_source[0] if lineage_source else src_name
+    lineage_src = lin_src[0] if lin_src else src_name
+    lineage_col = lin_src[1] if lin_src else "id"
 
-    # Pick a report that has column lineage
-    report_with_lineage = conn.execute(
-        "SELECT target_model FROM column_lineage "
-        "WHERE target_model LIKE 'report_%' LIMIT 1"
+    # Pick a source pair with multi-hop downstream reach
+    impact = conn.execute(
+        "SELECT cl1.source_model, cl1.source_column FROM column_lineage cl1 "
+        "JOIN column_lineage cl2 ON cl1.target_model = cl2.source_model "
+        "WHERE cl1.source_model LIKE 'raw_%' "
+        "GROUP BY cl1.source_model, cl1.source_column "
+        "ORDER BY COUNT(*) DESC LIMIT 1"
     ).fetchone()
-    report_name = report_with_lineage[0] if report_with_lineage else "report_010"
+    impact_model = impact[0] if impact else lineage_src
+    impact_col = impact[1] if impact else lineage_col
 
-    # Pick a source.column pair that has impact
-    impact_pair = conn.execute(
-        "SELECT source_model, source_column FROM column_lineage "
-        "WHERE source_model LIKE 'raw_%' AND source_column = 'amount' LIMIT 1"
-    ).fetchone()
-    if not impact_pair:
-        impact_pair = conn.execute(
-            "SELECT source_model, source_column FROM column_lineage "
-            "WHERE source_model LIKE 'raw_%' LIMIT 1"
-        ).fetchone()
-    impact_model = impact_pair[0] if impact_pair else src_name
-    impact_col = impact_pair[1] if impact_pair else "id"
+    # 1) Downstream models (recursive)
+    q = """WITH RECURSIVE ds AS (
+        SELECT target FROM model_dependencies WHERE source = ?
+        UNION SELECT md.target FROM model_dependencies md JOIN ds ON md.source = ds.target
+    ) SELECT * FROM ds"""
+    stats = _timed(lambda: conn.execute(q, (src_name,)).fetchall())
+    results["downstream_models"] = stats
+    rows = conn.execute(q, (src_name,)).fetchall()
+    print(f"  Downstream from {src_name} ({len(rows)} models):   {_fmt(stats)}")
 
-    # 1) Recursive downstream: all models that depend on a source (via model deps)
-    def q_downstream_models():
-        conn.execute("""
-            WITH RECURSIVE downstream AS (
-                SELECT target FROM model_dependencies WHERE source = ?
-                UNION
-                SELECT md.target FROM model_dependencies md
-                JOIN downstream d ON md.source = d.target
-            )
-            SELECT * FROM downstream
-        """, (src_name,)).fetchall()
+    # 2) Upstream models (recursive)
+    q = """WITH RECURSIVE us AS (
+        SELECT source FROM model_dependencies WHERE target = ?
+        UNION SELECT md.source FROM model_dependencies md JOIN us ON md.target = us.source
+    ) SELECT * FROM us"""
+    stats = _timed(lambda: conn.execute(q, (report_name,)).fetchall())
+    results["upstream_models"] = stats
+    rows = conn.execute(q, (report_name,)).fetchall()
+    print(f"  Upstream to {report_name} ({len(rows)} models):     {_fmt(stats)}")
 
-    stats = _timed(q_downstream_models)
-    results["downstream_models_recursive"] = stats
-    rows = conn.execute("""
-        WITH RECURSIVE downstream AS (
-            SELECT target FROM model_dependencies WHERE source = ?
-            UNION
-            SELECT md.target FROM model_dependencies md
-            JOIN downstream d ON md.source = d.target
-        )
-        SELECT * FROM downstream
-    """, (src_name,)).fetchall()
-    print(f"  Downstream models from {src_name} ({len(rows)} models): {_fmt(stats)}")
-
-    # 2) Recursive upstream: all models upstream of a report
-    def q_upstream_models():
-        conn.execute("""
-            WITH RECURSIVE upstream AS (
-                SELECT source FROM model_dependencies WHERE target = ?
-                UNION
-                SELECT md.source FROM model_dependencies md
-                JOIN upstream u ON md.target = u.source
-            )
-            SELECT * FROM upstream
-        """, (report_name,)).fetchall()
-
-    stats = _timed(q_upstream_models)
-    results["upstream_models_recursive"] = stats
-    rows = conn.execute("""
-        WITH RECURSIVE upstream AS (
-            SELECT source FROM model_dependencies WHERE target = ?
-            UNION
-            SELECT md.source FROM model_dependencies md
-            JOIN upstream u ON md.target = u.source
-        )
-        SELECT * FROM upstream
-    """, (report_name,)).fetchall()
-    print(f"  Upstream models to {report_name} ({len(rows)} models):  {_fmt(stats)}")
-
-    # 3) Column lineage trace: follow a column from source through all layers
-    def q_column_trace():
-        conn.execute("""
-            WITH RECURSIVE col_trace AS (
-                SELECT source_model, source_column, target_model, target_column, transform, 1 as depth
-                FROM column_lineage
-                WHERE source_model = ? AND source_column = 'id'
-                UNION ALL
-                SELECT cl.source_model, cl.source_column, cl.target_model, cl.target_column,
-                       cl.transform, ct.depth + 1
-                FROM column_lineage cl
-                JOIN col_trace ct ON cl.source_model = ct.target_model
-                    AND cl.source_column = ct.target_column
-                WHERE ct.depth < 10
-            )
-            SELECT * FROM col_trace
-        """, (lineage_src,)).fetchall()
-
-    stats = _timed(q_column_trace)
+    # 3) Column trace downstream
+    q = """WITH RECURSIVE ct AS (
+        SELECT source_model, source_column, target_model, target_column, transform, 1 d
+        FROM column_lineage WHERE source_model = ? AND source_column = ?
+        UNION ALL
+        SELECT cl.source_model, cl.source_column, cl.target_model, cl.target_column,
+               cl.transform, ct.d + 1
+        FROM column_lineage cl JOIN ct ON cl.source_model = ct.target_model
+            AND cl.source_column = ct.target_column WHERE ct.d < 10
+    ) SELECT * FROM ct"""
+    stats = _timed(lambda: conn.execute(q, (lineage_src, lineage_col)).fetchall())
     results["column_trace_downstream"] = stats
-    rows = conn.execute("""
-        WITH RECURSIVE col_trace AS (
-            SELECT source_model, source_column, target_model, target_column, transform, 1 as depth
-            FROM column_lineage
-            WHERE source_model = ? AND source_column = 'id'
-            UNION ALL
-            SELECT cl.source_model, cl.source_column, cl.target_model, cl.target_column,
-                   cl.transform, ct.depth + 1
-            FROM column_lineage cl
-            JOIN col_trace ct ON cl.source_model = ct.target_model
-                AND cl.source_column = ct.target_column
-            WHERE ct.depth < 10
-        )
-        SELECT * FROM col_trace
-    """, (lineage_src,)).fetchall()
-    print(f"  Column trace from {lineage_src}.id ({len(rows)} edges):   {_fmt(stats)}")
+    rows = conn.execute(q, (lineage_src, lineage_col)).fetchall()
+    print(f"  Column trace {lineage_src}.{lineage_col} ({len(rows)} edges):  {_fmt(stats)}")
 
-    # 4) Reverse column lineage: trace back from a report column to its sources
-    def q_reverse_column_trace():
-        conn.execute("""
-            WITH RECURSIVE reverse_trace AS (
-                SELECT source_model, source_column, target_model, target_column, transform, 1 as depth
-                FROM column_lineage
-                WHERE target_model = ?
-                UNION ALL
-                SELECT cl.source_model, cl.source_column, cl.target_model, cl.target_column,
-                       cl.transform, rt.depth + 1
-                FROM column_lineage cl
-                JOIN reverse_trace rt ON cl.target_model = rt.source_model
-                    AND cl.target_column = rt.source_column
-                WHERE rt.depth < 10
-            )
-            SELECT DISTINCT source_model, source_column, target_model, target_column, transform, depth
-            FROM reverse_trace ORDER BY depth
-        """, (report_name,)).fetchall()
+    # 4) Reverse column trace
+    q = """WITH RECURSIVE rt AS (
+        SELECT source_model, source_column, target_model, target_column, transform, 1 d
+        FROM column_lineage WHERE target_model = ?
+        UNION ALL
+        SELECT cl.source_model, cl.source_column, cl.target_model, cl.target_column,
+               cl.transform, rt.d + 1
+        FROM column_lineage cl JOIN rt ON cl.target_model = rt.source_model
+            AND cl.target_column = rt.source_column WHERE rt.d < 10
+    ) SELECT DISTINCT source_model, source_column, target_model, target_column, d
+      FROM rt ORDER BY d"""
+    stats = _timed(lambda: conn.execute(q, (report_name,)).fetchall())
+    results["reverse_trace"] = stats
+    rows = conn.execute(q, (report_name,)).fetchall()
+    print(f"  Reverse trace to {report_name} ({len(rows)} edges): {_fmt(stats)}")
 
-    stats = _timed(q_reverse_column_trace)
-    results["reverse_column_trace"] = stats
-    rows = conn.execute("""
-        WITH RECURSIVE reverse_trace AS (
-            SELECT source_model, source_column, target_model, target_column, transform, 1 as depth
-            FROM column_lineage
-            WHERE target_model = ?
-            UNION ALL
-            SELECT cl.source_model, cl.source_column, cl.target_model, cl.target_column,
-                   cl.transform, rt.depth + 1
-            FROM column_lineage cl
-            JOIN reverse_trace rt ON cl.target_model = rt.source_model
-                AND cl.target_column = rt.source_column
-            WHERE rt.depth < 10
-        )
-        SELECT DISTINCT source_model, source_column FROM reverse_trace
-    """, (report_name,)).fetchall()
-    print(f"  Reverse trace to {report_name} ({len(rows)} sources):  {_fmt(stats)}")
-
-    # 5) Impact analysis: if we change a column, what models are affected?
-    def q_impact_analysis():
-        conn.execute("""
-            WITH RECURSIVE impact AS (
-                SELECT target_model, target_column, transform, 1 as depth
-                FROM column_lineage
-                WHERE source_model = ? AND source_column = ?
-                UNION ALL
-                SELECT cl.target_model, cl.target_column, cl.transform, i.depth + 1
-                FROM column_lineage cl
-                JOIN impact i ON cl.source_model = i.target_model
-                    AND cl.source_column = i.target_column
-                WHERE i.depth < 10
-            )
-            SELECT DISTINCT target_model, target_column, MIN(depth) as min_depth
-            FROM impact GROUP BY target_model, target_column
-            ORDER BY min_depth
-        """, (impact_model, impact_col)).fetchall()
-
-    stats = _timed(q_impact_analysis)
+    # 5) Impact analysis
+    q = """WITH RECURSIVE imp AS (
+        SELECT target_model, target_column, transform, 1 d
+        FROM column_lineage WHERE source_model = ? AND source_column = ?
+        UNION ALL
+        SELECT cl.target_model, cl.target_column, cl.transform, imp.d + 1
+        FROM column_lineage cl JOIN imp ON cl.source_model = imp.target_model
+            AND cl.source_column = imp.target_column WHERE imp.d < 10
+    ) SELECT DISTINCT target_model, target_column, MIN(d) FROM imp
+      GROUP BY target_model, target_column ORDER BY 3"""
+    stats = _timed(lambda: conn.execute(q, (impact_model, impact_col)).fetchall())
     results["impact_analysis"] = stats
-    rows = conn.execute("""
-        WITH RECURSIVE impact AS (
-            SELECT target_model, target_column, transform, 1 as depth
-            FROM column_lineage
-            WHERE source_model = ? AND source_column = ?
-            UNION ALL
-            SELECT cl.target_model, cl.target_column, cl.transform, i.depth + 1
-            FROM column_lineage cl
-            JOIN impact i ON cl.source_model = i.target_model
-                AND cl.source_column = i.target_column
-            WHERE i.depth < 10
-        )
-        SELECT DISTINCT target_model FROM impact
-    """, (impact_model, impact_col)).fetchall()
-    print(f"  Impact of {impact_model}.{impact_col} ({len(rows)} models):      {_fmt(stats)}")
+    rows = conn.execute(q, (impact_model, impact_col)).fetchall()
+    print(f"  Impact of {impact_model}.{impact_col} ({len(rows)} cols):  {_fmt(stats)}")
 
-    # 6) Cross-model column join: find all transforms applied to 'amount' across pipeline
-    def q_transform_chain():
-        conn.execute("""
-            SELECT cl.source_model, cl.source_column, cl.target_model, cl.target_column,
-                   cl.transform, m.layer
-            FROM column_lineage cl
-            JOIN models m ON cl.target_model = m.name
-            WHERE cl.source_column = 'amount' OR cl.target_column LIKE '%amount%'
-            ORDER BY m.layer, cl.target_model
-        """).fetchall()
-
-    stats = _timed(q_transform_chain)
+    # 6) Transform chain for 'amount'
+    q = """SELECT cl.source_model, cl.source_column, cl.target_model, cl.target_column,
+                  cl.transform, m.layer
+           FROM column_lineage cl JOIN models m ON cl.target_model = m.name
+           WHERE cl.source_column LIKE '%amount%' OR cl.target_column LIKE '%amount%'
+           ORDER BY m.layer"""
+    stats = _timed(lambda: conn.execute(q).fetchall())
     results["transform_chain"] = stats
-    row_count = len(conn.execute(
-        "SELECT * FROM column_lineage WHERE source_column = 'amount' OR target_column LIKE '%amount%'"
-    ).fetchall())
-    print(f"  Transform chain for 'amount' ({row_count} rows):   {_fmt(stats)}")
+    n = len(conn.execute(q).fetchall())
+    print(f"  Transform chain for 'amount' ({n} rows):   {_fmt(stats)}")
 
-    # 7) Full lineage graph edge count per layer
-    def q_lineage_by_layer():
-        conn.execute("""
-            SELECT m.layer, COUNT(*) as edge_count
-            FROM column_lineage cl
-            JOIN models m ON cl.target_model = m.name
-            GROUP BY m.layer
-            ORDER BY m.layer
-        """).fetchall()
-
-    stats = _timed(q_lineage_by_layer)
+    # 7) Lineage edges by layer
+    q = """SELECT m.layer, COUNT(*) FROM column_lineage cl
+           JOIN models m ON cl.target_model = m.name GROUP BY m.layer ORDER BY m.layer"""
+    stats = _timed(lambda: conn.execute(q).fetchall())
     results["lineage_by_layer"] = stats
-    rows = conn.execute("""
-        SELECT m.layer, COUNT(*) as edge_count
-        FROM column_lineage cl JOIN models m ON cl.target_model = m.name
-        GROUP BY m.layer ORDER BY m.layer
-    """).fetchall()
+    rows = conn.execute(q).fetchall()
     breakdown = ", ".join(f"{r[0]}={r[1]}" for r in rows)
-    print(f"  Lineage edges by layer ({breakdown}): {_fmt(stats)}")
+    print(f"  Lineage by layer ({breakdown}): {_fmt(stats)}")
 
     return results
 
 
-def bench_state_backend_with_lineage(
+def bench_state_backend(
     models: list[ModelDef], tmp_dir: Path
 ) -> dict[str, dict[str, float]]:
-    """Benchmark the SQLiteBackend with 500 assets that include column metadata."""
+    n = len(models)
     print(f"\n{'─' * 70}")
-    print("  SQLiteBackend — 500 Assets with Column Metadata")
+    print(f"  SQLiteBackend — {n} Assets with Column Metadata")
     print(f"{'─' * 70}")
     results: dict[str, dict[str, float]] = {}
-
     backend = SQLiteBackend(db_path=tmp_dir / "state.db")
 
-    # Build snapshot from models
     assets: dict[str, AssetState] = {}
     deps: list[DependencyState] = []
     for m in models:
-        fp = hashlib.sha256(f"{m.name}:{m.sql or ''}".encode()).hexdigest()
+        fp = hashlib.sha256(f"{m.name}:{m.resolved_sql or ''}".encode()).hexdigest()
         assets[m.name] = AssetState(
             name=m.name, kind=m.layer, fingerprint=fp,
-            data={
-                "name": m.name,
-                "description": m.description,
-                "sql": m.sql,
-                "columns": m.all_columns,
-                "column_lineage": [
-                    {"src_model": s, "src_col": sc, "tgt_col": tc, "transform": t}
-                    for s, sc, tc, t in m.column_lineage
-                ],
-            },
-            applied_by="benchmark", version=1,
-        )
-        for dep_name in m.depends_on:
-            dep_fp = hashlib.sha256(f"{dep_name}:{m.name}".encode()).hexdigest()
+            data={"description": m.description, "sql": m.resolved_sql,
+                  "columns": m.all_columns,
+                  "lineage": [{"s": s, "sc": sc, "tc": tc, "t": t}
+                              for s, sc, tc, t in m.column_lineage]},
+            applied_by="benchmark", version=1)
+        for d in m.depends_on:
             deps.append(DependencyState(
-                source=dep_name, target=m.name, type="ref", fingerprint=dep_fp,
-            ))
+                source=d, target=m.name, type="ref",
+                fingerprint=hashlib.sha256(f"{d}:{m.name}".encode()).hexdigest()))
 
-    snapshot = StateSnapshot(
-        environment=ENVIRONMENT, assets=assets, dependencies=deps,
-        metadata={"benchmark": "column_lineage", "num_assets": len(models)},
-    )
+    snapshot = StateSnapshot(environment=ENVIRONMENT, assets=assets, dependencies=deps,
+                             metadata={"benchmark": "column_lineage", "n": n})
 
-    # Save
     stats = _timed(lambda: backend.save(ENVIRONMENT, snapshot))
     results["save"] = stats
-    print(f"  Save {len(models)} assets with columns:     {_fmt(stats)}")
+    print(f"  Save {n} assets:                        {_fmt(stats)}")
 
-    # Load
     stats = _timed(lambda: backend.load(ENVIRONMENT))
     results["load"] = stats
-    print(f"  Load {len(models)} assets with columns:     {_fmt(stats)}")
+    print(f"  Load {n} assets:                        {_fmt(stats)}")
 
-    # Verify
     loaded = backend.load(ENVIRONMENT)
-    assert loaded is not None
-    assert len(loaded.assets) == len(models)
-
+    assert loaded is not None and len(loaded.assets) == n
     backend.close()
     return results
 
@@ -959,101 +856,106 @@ def bench_state_backend_with_lineage(
 # ── Main ─────────────────────────────────────────────────────
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="Column lineage benchmark")
+    parser.add_argument("--scale", type=int, default=DEFAULT_SCALE,
+                        help="Scale factor (1=50 models, 10=500 models)")
+    args = parser.parse_args()
+    scale = args.scale
+
+    n_total = 50 * scale
     print("=" * 70)
-    print(f"  BENCHMARK: Column Lineage with sqlglot — {NUM_ASSETS} models")
+    print(f"  BENCHMARK: Column Lineage with sqlglot.lineage() — {n_total} models")
+    print(f"  (scale={scale}, {{ ref() }} + CTE-heavy SQL)")
     print("=" * 70)
 
     tmp_root = Path(tempfile.mkdtemp(prefix="assets_lineage_bench_"))
     print(f"  Temp dir: {tmp_root}")
-
     all_results: dict[str, Any] = {}
 
-    # ── Step 1: Generate DAG ──
-    print(f"\n  Generating {NUM_ASSETS}-model DAG...")
+    # Step 1: Generate DAG
+    print(f"\n  Generating {n_total}-model DAG with CTE SQL...")
     t0 = time.perf_counter()
-    models, schema = generate_dag()
+    models, schema = generate_dag(scale=scale)
     gen_ms = (time.perf_counter() - t0) * 1000
-    print(f"  DAG generated in {gen_ms:.1f}ms")
-    print(f"  Layers: sources={NUM_SOURCES} staging={NUM_STAGING} "
-          f"intermediate={NUM_INTERMEDIATE} marts={NUM_MARTS} reports={NUM_REPORTS}")
+    layers = {}
+    for m in models:
+        layers[m.layer] = layers.get(m.layer, 0) + 1
+    layer_str = " ".join(f"{k}={v}" for k, v in sorted(layers.items()))
+    print(f"  DAG generated in {gen_ms:.1f}ms  ({layer_str})")
 
-    # ── Step 2: Extract lineage with sqlglot ──
-    print(f"\n  Extracting column lineage with sqlglot...")
+    # Show sample SQL
+    for m in models:
+        if m.layer == "mart" and m.jinja_sql:
+            print(f"\n  Sample mart SQL ({m.name}):")
+            for line in m.jinja_sql.split("\n"):
+                print(f"    {line}")
+            break
+
+    # Step 2: Resolve refs and extract lineage
+    print(f"\n  Resolving refs and extracting lineage with sqlglot.lineage()...")
     t0 = time.perf_counter()
     for m in models:
         extract_lineage_for_model(m, schema)
-        # Update schema with discovered columns for downstream models
         if m.all_columns:
             schema[m.name] = {c: v.get("type", "VARCHAR") for c, v in m.all_columns.items()}
     lineage_ms = (time.perf_counter() - t0) * 1000
-    print(f"  Lineage extracted in {lineage_ms:.1f}ms")
 
     total_cols = sum(len(m.all_columns) for m in models)
     defined_cols = sum(len(m.defined_columns) for m in models)
     discovered_cols = total_cols - defined_cols
     total_edges = sum(len(m.column_lineage) for m in models)
-    print(f"  Total columns: {total_cols} (defined={defined_cols}, discovered={discovered_cols})")
-    print(f"  Total lineage edges: {total_edges}")
-    all_results["generation"] = {"dag_ms": gen_ms, "lineage_ms": lineage_ms,
-                                  "total_cols": total_cols, "lineage_edges": total_edges}
+    total_refs = sum(len(m.depends_on) for m in models if m.jinja_sql)
+    print(f"  Lineage extracted in {lineage_ms:.1f}ms")
+    print(f"  Refs resolved: {total_refs}")
+    print(f"  Columns: {total_cols} (defined={defined_cols}, discovered={discovered_cols})")
+    print(f"  Lineage edges: {total_edges}")
+    all_results["generation"] = {
+        "dag_ms": gen_ms, "lineage_ms": lineage_ms,
+        "total_cols": total_cols, "lineage_edges": total_edges,
+        "refs": total_refs,
+    }
 
-    # ── Step 3: Store in SQLite ──
+    # Step 3: Store in SQLite
     db_path = tmp_root / "lineage.db"
-    print(f"\n  Storing in SQLite...")
     t0 = time.perf_counter()
     conn = create_lineage_db(db_path)
     store_lineage(conn, models)
     store_ms = (time.perf_counter() - t0) * 1000
-    print(f"  Stored in {store_ms:.1f}ms")
+    print(f"\n  Stored in SQLite in {store_ms:.1f}ms")
     all_results["storage_ms"] = store_ms
 
-    # Verify counts
-    model_count = conn.execute("SELECT COUNT(*) FROM models").fetchone()[0]
-    col_count = conn.execute("SELECT COUNT(*) FROM columns").fetchone()[0]
-    lineage_count = conn.execute("SELECT COUNT(*) FROM column_lineage").fetchone()[0]
-    dep_count = conn.execute("SELECT COUNT(*) FROM model_dependencies").fetchone()[0]
-    print(f"  DB: {model_count} models, {col_count} columns, "
-          f"{lineage_count} lineage edges, {dep_count} dependency edges")
+    mc = conn.execute("SELECT COUNT(*) FROM models").fetchone()[0]
+    cc = conn.execute("SELECT COUNT(*) FROM columns").fetchone()[0]
+    lc = conn.execute("SELECT COUNT(*) FROM column_lineage").fetchone()[0]
+    dc = conn.execute("SELECT COUNT(*) FROM model_dependencies").fetchone()[0]
+    print(f"  DB: {mc} models, {cc} columns, {lc} lineage edges, {dc} dep edges")
 
-    # ── Step 4: Simple queries ──
-    all_results["simple_queries"] = bench_simple_queries(conn)
-
-    # ── Step 5: Complex downstream queries ──
-    all_results["downstream_queries"] = bench_downstream_queries(conn)
-
-    # ── Step 6: State backend benchmark with column data ──
-    all_results["state_backend"] = bench_state_backend_with_lineage(models, tmp_root)
-
+    # Step 4-5: Benchmark queries
+    all_results["simple"] = bench_simple_queries(conn)
+    all_results["complex"] = bench_downstream_queries(conn)
+    all_results["backend"] = bench_state_backend(models, tmp_root)
     conn.close()
 
-    # ── Summary ──
+    # Summary
     print(f"\n{'=' * 70}")
     print("  SUMMARY")
     print(f"{'=' * 70}")
-    print(f"\n  DAG generation:         {all_results['generation']['dag_ms']:>10.1f} ms")
-    print(f"  Lineage extraction:     {all_results['generation']['lineage_ms']:>10.1f} ms")
-    print(f"  SQLite storage:         {all_results['storage_ms']:>10.1f} ms")
-    print(f"  Total columns:          {all_results['generation']['total_cols']:>10d}")
-    print(f"  Lineage edges:          {all_results['generation']['lineage_edges']:>10d}")
+    print(f"\n  DAG generation:         {gen_ms:>10.1f} ms")
+    print(f"  Lineage (sqlglot):      {lineage_ms:>10.1f} ms")
+    print(f"  SQLite storage:         {store_ms:>10.1f} ms")
+    print(f"  Refs resolved:          {total_refs:>10d}")
+    print(f"  Total columns:          {total_cols:>10d}")
+    print(f"  Lineage edges:          {total_edges:>10d}")
 
-    print(f"\n  {'Simple Query':<35} {'Median ms':>10}")
-    print(f"  {'─' * 45}")
-    for k, v in all_results["simple_queries"].items():
-        print(f"  {k:<35} {v['median_ms']:>10.3f}")
-
-    print(f"\n  {'Complex Query':<35} {'Median ms':>10}")
-    print(f"  {'─' * 45}")
-    for k, v in all_results["downstream_queries"].items():
-        print(f"  {k:<35} {v['median_ms']:>10.3f}")
-
-    print(f"\n  {'State Backend':<35} {'Median ms':>10}")
-    print(f"  {'─' * 45}")
-    for k, v in all_results["state_backend"].items():
-        print(f"  {k:<35} {v['median_ms']:>10.3f}")
+    for section, label in [("simple", "Simple Query"), ("complex", "Complex Query"),
+                           ("backend", "State Backend")]:
+        print(f"\n  {label:<35} {'Median ms':>10}")
+        print(f"  {'─' * 45}")
+        for k, v in all_results[section].items():
+            print(f"  {k:<35} {v['median_ms']:>10.3f}")
 
     print()
-
-    # Cleanup
     shutil.rmtree(tmp_root, ignore_errors=True)
     print(f"  Cleaned up {tmp_root}")
 
