@@ -1,6 +1,26 @@
 """Tests for the Registry."""
 
-from assets import Asset, Registry
+import pytest
+
+from assets import Asset, FieldMapping, Registry
+from assets.resolver.lineage import DependencyResolver
+
+
+class CountingResolver(DependencyResolver):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def resolve(self, asset: Asset, schema: dict[str, list[str]]) -> list[FieldMapping]:
+        self.calls += 1
+        if not schema:
+            return []
+        source = next(iter(schema))
+        return [
+            FieldMapping(
+                source=f"{source}/id",
+                target=f"{asset.id}/id",
+            )
+        ]
 
 
 class TestRegistry:
@@ -74,11 +94,107 @@ class TestRegistry:
         assert registry.get("test").type == "v2"  # type: ignore[union-attr]
 
     def test_resolve_field_dependency_no_resolver_raises(self, registry: Registry):
-        import pytest
-
         registry.register(Asset(id="test", sql="SELECT 1"))
         with pytest.raises(ValueError, match="resolver instance must be provided"):
             registry.resolve_field_dependency(asset_id="test")
+
+    def test_resolve_unknown_resolver_raises(self, registry: Registry):
+        with pytest.raises(ValueError, match="Unknown resolver"):
+            registry.resolve("lineage", asset_id="x")
+
+    def test_add_resolver_duplicate_raises(self, registry: Registry):
+        resolver = CountingResolver()
+        registry.add_resolver("lineage", resolver)
+        with pytest.raises(ValueError, match="already registered"):
+            registry.add_resolver("lineage", resolver)
+
+    def test_resolve_by_asset_id(self, registry: Registry):
+        resolver = CountingResolver()
+        registry.add_resolver("lineage", resolver)
+        registry.register(
+            Asset(
+                id="raw.users",
+                type="source",
+                children=[Asset(id="id", type="column")],
+            )
+        )
+        registry.register(
+            Asset(
+                id="staging.users",
+                sql="SELECT id FROM raw.users",
+                depends_on=["raw.users"],
+            )
+        )
+
+        result = registry.resolve("lineage", asset_id="staging.users")
+        assert resolver.calls == 1
+        assert len(result) == 1
+        assert result[0].source == "raw.users/id"
+        assert result[0].target == "staging.users/id"
+
+    def test_resolve_by_selector(self, registry: Registry):
+        resolver = CountingResolver()
+        registry.add_resolver("lineage", resolver)
+        registry.register(Asset(id="raw.users", children=[Asset(id="id")]))
+        registry.register(
+            Asset(
+                id="staging.users",
+                type="data_model",
+                sql="SELECT id FROM raw.users",
+                depends_on=["raw.users"],
+            )
+        )
+        registry.register(
+            Asset(
+                id="mart.users",
+                type="data_model",
+                sql="SELECT id FROM staging.users",
+                depends_on=["staging.users"],
+            )
+        )
+
+        result = registry.resolve("lineage", selector="type:data_model")
+        assert resolver.calls == 2
+        assert len(result) == 2
+
+    def test_resolve_uses_cache_when_inputs_unchanged(self, registry: Registry):
+        resolver = CountingResolver()
+        registry.add_resolver("lineage", resolver)
+        registry.register(Asset(id="raw.users", children=[Asset(id="id")]))
+        registry.register(
+            Asset(
+                id="staging.users",
+                sql="SELECT id FROM raw.users",
+                depends_on=["raw.users"],
+            )
+        )
+
+        first = registry.resolve("lineage", asset_id="staging.users")
+        second = registry.resolve("lineage", asset_id="staging.users")
+        assert resolver.calls == 1
+        assert first == second
+
+    def test_resolve_cache_invalidates_after_upstream_change(self, registry: Registry):
+        resolver = CountingResolver()
+        registry.add_resolver("lineage", resolver)
+        registry.register(Asset(id="raw.users", children=[Asset(id="id")]))
+        registry.register(
+            Asset(
+                id="staging.users",
+                sql="SELECT id FROM raw.users",
+                depends_on=["raw.users"],
+            )
+        )
+
+        registry.resolve("lineage", asset_id="staging.users")
+        registry.register(
+            Asset(
+                id="raw.users",
+                children=[Asset(id="id"), Asset(id="email")],
+            )
+        )
+        registry.resolve("lineage", asset_id="staging.users")
+        assert resolver.calls == 2
 
     def test_reregister_deduplicates_dependencies(self, registry: Registry):
         a = Asset(
@@ -134,12 +250,12 @@ class TestRegistry:
         assert len(registry.dependencies) == 1
 
     def test_resolve_field_dependency_no_target_raises(self, registry: Registry):
-        import pytest
-
-        from assets.resolver.lineage import DependencyResolver
-
         class StubResolver(DependencyResolver):
-            def resolve(self, sql, schema):
+            def resolve(
+                self,
+                asset: Asset,
+                schema: dict[str, list[str]],
+            ) -> list[FieldMapping]:
                 return []
 
         with pytest.raises(ValueError, match="Provide either"):
@@ -179,7 +295,7 @@ class TestRegistry:
     def test_register_many_overwrites_existing(self, registry: Registry):
         registry.register(Asset(id="a", type="v1"))
         registry.register_many([Asset(id="a", type="v2")])
-        assert registry.get("a").type == "v2"
+        assert registry.get("a").type == "v2"  # type: ignore[union-attr]
 
     def test_register_many_deduplicates_deps(self, registry: Registry):
         assets = [

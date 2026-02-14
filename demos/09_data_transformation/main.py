@@ -256,7 +256,7 @@ def main() -> None:
     # ── Step 9: Column-level lineage via sqlglot ──────────────────────
     _print_section(9, "Column-Level Lineage (sqlglot)")
 
-    resolver = ColumnLineageResolver()
+    registry.add_resolver("lineage", ColumnLineageResolver())
     lineage_targets = [
         "stg_accounts",
         "stg_contacts",
@@ -270,7 +270,7 @@ def main() -> None:
         if not asset or not asset.sql:
             continue
         print(f"\n  {target_id}:")
-        mappings = registry.resolve_field_dependency(target_id, resolver=resolver)
+        mappings = registry.resolve("lineage", asset_id=target_id)
         if mappings:
             for fm in mappings:
                 t = f" ({fm.transform})" if fm.transform else ""

@@ -33,8 +33,12 @@ class SimpleDependencyResolver(DependencyResolver):
     This resolver handles basic SELECT ... AS ... FROM patterns.
     """
 
-    def resolve(self, sql: str, schema: dict[str, list[str]]) -> list[FieldMapping]:
+    def resolve(self, asset: Asset, schema: dict[str, list[str]]) -> list[FieldMapping]:
         mappings: list[FieldMapping] = []
+        if not asset.sql:
+            return mappings
+
+        sql = asset.sql
 
         # Build reverse lookup: column_name -> table_name
         col_to_table: dict[str, str] = {}
@@ -148,13 +152,10 @@ registry.register(
 
 print("=== Column-Level Dependencies ===\n")
 
-resolver = SimpleDependencyResolver()
+registry.add_resolver("lineage", SimpleDependencyResolver())
 
 # Resolve via registry (handles schema building from upstream assets)
-deps = registry.resolve_field_dependency(
-    asset_id="staging.users",
-    resolver=resolver,
-)
+deps = registry.resolve("lineage", asset_id="staging.users")
 
 print(f"Dependencies for staging.users ({len(deps)} mappings):\n")
 for mapping in deps:
@@ -171,7 +172,7 @@ for mapping in deps:
 
 print("\n=== Key Point: Resolution is On-Demand ===\n")
 print("Column-level resolution NEVER runs during register() or plan().")
-print("The consumer explicitly calls resolve_field_dependency() when needed:")
+print("The consumer explicitly calls registry.resolve('lineage', ...) when needed:")
 print("  - Catalog UI: user clicks a column")
 print("  - Impact analysis: 'what breaks if I drop this column?'")
 print("  - CI/PR review: resolve only changed models")

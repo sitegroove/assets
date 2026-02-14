@@ -252,18 +252,17 @@ manager.destroy_environment("dev-alice")
 On-demand, consumer-implemented. The library provides the `DependencyResolver` abstract base class; consumers implement `resolve()` with their parser (e.g., sqlglot).
 
 ```python
-from assets import DependencyResolver, FieldMapping
+from assets import Asset, DependencyResolver, FieldMapping, Registry
 
 class SqlglotResolver(DependencyResolver):
-    def resolve(self, sql: str, schema: dict[str, list[str]]) -> list[FieldMapping]:
+    def resolve(self, asset: Asset, schema: dict[str, list[str]]) -> list[FieldMapping]:
+        if not asset.sql:
+            return []
         # Use sqlglot to trace column dependencies through SQL
         ...
 
-resolver = SqlglotResolver()
-mappings = registry.resolve_field_dependency(
-    asset_name="mart.revenue",
-    resolver=resolver,
-)
+registry = Registry(resolvers={"lineage": SqlglotResolver()})
+mappings = registry.resolve("lineage", asset_id="mart.revenue")
 ```
 
 ## State Backends

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from assets import DependencyResolver, FieldMapping
+from assets import Asset, DependencyResolver, FieldMapping
 
 # ── Optional dependency guards ────────────────────────────────────────
 
@@ -157,11 +157,12 @@ class ColumnLineageResolver(DependencyResolver):
     Falls back gracefully when sqlglot is not installed.
     """
 
-    def resolve(self, sql: str, schema: dict[str, list[str]]) -> list[FieldMapping]:
+    def resolve(self, asset: Asset, schema: dict[str, list[str]]) -> list[FieldMapping]:
         """Parse SQL and trace column dependencies."""
-        if not HAS_SQLGLOT:
+        if not HAS_SQLGLOT or not asset.sql:
             return []
 
+        sql = asset.sql
         mappings: list[FieldMapping] = []
 
         # Build sqlglot schema: {table: {col: "VARCHAR"}}

@@ -2,13 +2,13 @@
 
 import pytest
 
-from assets import DependencyResolver, FieldMapping
+from assets import Asset, DependencyResolver, FieldMapping, Registry
 
 
 class MockDependencyResolver(DependencyResolver):
     """Concrete implementation for testing."""
 
-    def resolve(self, sql: str, schema: dict[str, list[str]]) -> list[FieldMapping]:
+    def resolve(self, asset: Asset, schema: dict[str, list[str]]) -> list[FieldMapping]:
         return [
             FieldMapping(
                 source="raw.users/email",
@@ -25,14 +25,13 @@ class TestDependencyResolver:
 
     def test_concrete_implementation(self):
         resolver = MockDependencyResolver()
-        result = resolver.resolve("SELECT ...", {"raw.users": ["email"]})
+        asset = Asset(id="staging.users", sql="SELECT ...")
+        result = resolver.resolve(asset, {"raw.users": ["email"]})
         assert len(result) == 1
         assert result[0].source_field == "email"
         assert result[0].target_field == "email_clean"
 
     def test_resolve_via_registry(self):
-        from assets import Asset, Registry
-
         registry = Registry()
         upstream = Asset(id="raw.users", type="source")
         downstream = Asset(
@@ -47,4 +46,18 @@ class TestDependencyResolver:
         result = registry.resolve_field_dependency(
             asset_id="staging.users", resolver=resolver
         )
+        assert len(result) == 1
+
+    def test_resolve_via_named_registry_resolver(self):
+        registry = Registry(resolvers={"lineage": MockDependencyResolver()})
+        upstream = Asset(id="raw.users", type="source")
+        downstream = Asset(
+            id="staging.users",
+            sql="SELECT * FROM raw.users",
+            depends_on=["raw.users"],
+        )
+        registry.register(upstream)
+        registry.register(downstream)
+
+        result = registry.resolve("lineage", asset_id="staging.users")
         assert len(result) == 1

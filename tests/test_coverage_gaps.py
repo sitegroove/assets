@@ -400,7 +400,9 @@ class TestDemo09Smoke:
         resolver = ColumnLineageResolver()
         sql = "SELECT id, name FROM upstream_table"
         schema = {"upstream_table": ["id", "name", "email"]}
-        mappings = resolver.resolve(sql, schema)
+        from assets import Asset
+
+        mappings = resolver.resolve(Asset(id="target", sql=sql), schema)
         # Should find at least the columns referenced
         assert len(mappings) >= 0  # may vary by sqlglot version
 

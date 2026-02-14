@@ -203,10 +203,11 @@ class SqlglotDependencyResolver(DependencyResolver):
     Falls back to regex for SQL that sqlglot can't parse.
     """
 
-    def resolve(self, sql: str, schema: dict[str, list[str]]) -> list[FieldMapping]:
-        if not HAS_SQLGLOT:
+    def resolve(self, asset: Asset, schema: dict[str, list[str]]) -> list[FieldMapping]:
+        if not HAS_SQLGLOT or not asset.sql:
             return []
 
+        sql = asset.sql
         mappings: list[FieldMapping] = []
 
         # Build schema in sqlglot format: {table: {col: type}}
@@ -831,12 +832,10 @@ def main() -> None:
     print("  Step 5: Column-level lineage (sqlglot)")
     print(f"{'─' * 70}")
 
-    resolver = SqlglotDependencyResolver()
+    registry.add_resolver("lineage", SqlglotDependencyResolver())
 
     for target_name in ["staging.users", "intermediate.user_orders", "mart.revenue"]:
-        lineage = registry.resolve_field_dependency(
-            asset_id=target_name, resolver=resolver
-        )
+        lineage = registry.resolve("lineage", asset_id=target_name)
         print(f"\n  {target_name} ({len(lineage)} mappings):")
         for m in lineage:
             t = f" [{m.transform}]" if m.transform else ""
