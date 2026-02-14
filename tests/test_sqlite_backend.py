@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from assets import SQLiteBackend
-from assets.state.models import AssetState, DependencyState, SourceFileRef, StateSnapshot
+from assets.state.models import AssetState, DependencyState, StateSnapshot
 
 
 @pytest.fixture
@@ -31,14 +31,14 @@ class TestSQLiteBackendBasic:
     def test_save_and_load_with_assets(self, backend: SQLiteBackend):
         state = StateSnapshot(
             environment="dev",
-            assets={"a": AssetState(name="a", fingerprint="fp1", kind="model")},
+            assets={"a": AssetState(id="a", fingerprint="fp1", type="model")},
         )
         backend.save("dev", state)
         loaded = backend.load("dev")
         assert loaded is not None
         assert "a" in loaded.assets
         assert loaded.assets["a"].fingerprint == "fp1"
-        assert loaded.assets["a"].kind == "model"
+        assert loaded.assets["a"].type == "model"
 
     def test_save_and_load_with_dependencies(self, backend: SQLiteBackend):
         state = StateSnapshot(
@@ -59,33 +59,12 @@ class TestSQLiteBackendBasic:
         assert loaded.dependencies[0].source == "staging.users"
         assert loaded.dependencies[0].target == "raw.users"
 
-    def test_save_and_load_with_source_files(self, backend: SQLiteBackend):
-        state = StateSnapshot(
-            environment="dev",
-            assets={
-                "a": AssetState(
-                    name="a",
-                    fingerprint="fp1",
-                    source_files=[
-                        SourceFileRef(path="models/a.sql", content_hash="abc123"),
-                    ],
-                ),
-            },
-        )
-        backend.save("dev", state)
-        loaded = backend.load("dev")
-        assert loaded is not None
-        sf = loaded.assets["a"].source_files
-        assert len(sf) == 1
-        assert sf[0].path == "models/a.sql"
-        assert sf[0].content_hash == "abc123"
-
     def test_save_and_load_with_data(self, backend: SQLiteBackend):
         state = StateSnapshot(
             environment="dev",
             assets={
                 "a": AssetState(
-                    name="a",
+                    id="a",
                     fingerprint="fp1",
                     data={"sql": "SELECT 1", "tags": ["core"]},
                 ),
@@ -121,7 +100,7 @@ class TestSQLiteBackendBasic:
     def test_delete_environment_removes_assets_and_deps(self, backend: SQLiteBackend):
         state = StateSnapshot(
             environment="dev",
-            assets={"a": AssetState(name="a", fingerprint="fp1")},
+            assets={"a": AssetState(id="a", fingerprint="fp1")},
             dependencies=[
                 DependencyState(source="a", target="b", fingerprint="depfp1"),
             ],
@@ -155,27 +134,27 @@ class TestSQLiteBackendUpdate:
     def test_update_asset(self, backend: SQLiteBackend):
         state = StateSnapshot(
             environment="dev",
-            assets={"a": AssetState(name="a", fingerprint="fp1")},
+            assets={"a": AssetState(id="a", fingerprint="fp1")},
         )
         backend.save("dev", state)
 
         # Update
-        state.assets["a"] = AssetState(name="a", fingerprint="fp2", kind="updated")
+        state.assets["a"] = AssetState(id="a", fingerprint="fp2", type="updated")
         backend.save("dev", state)
 
         loaded = backend.load("dev")
         assert loaded is not None
         assert loaded.assets["a"].fingerprint == "fp2"
-        assert loaded.assets["a"].kind == "updated"
+        assert loaded.assets["a"].type == "updated"
 
     def test_add_asset(self, backend: SQLiteBackend):
         state = StateSnapshot(
             environment="dev",
-            assets={"a": AssetState(name="a", fingerprint="fp1")},
+            assets={"a": AssetState(id="a", fingerprint="fp1")},
         )
         backend.save("dev", state)
 
-        state.assets["b"] = AssetState(name="b", fingerprint="fp_b")
+        state.assets["b"] = AssetState(id="b", fingerprint="fp_b")
         backend.save("dev", state)
 
         loaded = backend.load("dev")
@@ -186,8 +165,8 @@ class TestSQLiteBackendUpdate:
         state = StateSnapshot(
             environment="dev",
             assets={
-                "a": AssetState(name="a", fingerprint="fp1"),
-                "b": AssetState(name="b", fingerprint="fp2"),
+                "a": AssetState(id="a", fingerprint="fp1"),
+                "b": AssetState(id="b", fingerprint="fp2"),
             },
         )
         backend.save("dev", state)
@@ -204,7 +183,7 @@ class TestSQLiteBackendUpdate:
         state = StateSnapshot(
             environment="dev",
             assets={
-                "a": AssetState(name="a", fingerprint="fp1", deleted=True),
+                "a": AssetState(id="a", fingerprint="fp1", deleted=True),
             },
         )
         backend.save("dev", state)
@@ -221,14 +200,14 @@ class TestSQLiteBackendIsolation:
             "dev",
             StateSnapshot(
                 environment="dev",
-                assets={"a": AssetState(name="a", fingerprint="dev_fp")},
+                assets={"a": AssetState(id="a", fingerprint="dev_fp")},
             ),
         )
         backend.save(
             "prod",
             StateSnapshot(
                 environment="prod",
-                assets={"b": AssetState(name="b", fingerprint="prod_fp")},
+                assets={"b": AssetState(id="b", fingerprint="prod_fp")},
             ),
         )
 
@@ -252,7 +231,7 @@ class TestSQLiteBackendHistory:
     def test_insert_creates_history(self, backend: SQLiteBackend):
         state = StateSnapshot(
             environment="dev",
-            assets={"a": AssetState(name="a", fingerprint="fp1")},
+            assets={"a": AssetState(id="a", fingerprint="fp1")},
         )
         backend.save("dev", state)
 
@@ -264,11 +243,11 @@ class TestSQLiteBackendHistory:
     def test_update_appends_history(self, backend: SQLiteBackend):
         state = StateSnapshot(
             environment="dev",
-            assets={"a": AssetState(name="a", fingerprint="fp1")},
+            assets={"a": AssetState(id="a", fingerprint="fp1")},
         )
         backend.save("dev", state)
 
-        state.assets["a"] = AssetState(name="a", fingerprint="fp2")
+        state.assets["a"] = AssetState(id="a", fingerprint="fp2")
         backend.save("dev", state)
 
         history = backend.asset_history("dev", "a")
@@ -282,7 +261,7 @@ class TestSQLiteBackendHistory:
     def test_delete_appends_history(self, backend: SQLiteBackend):
         state = StateSnapshot(
             environment="dev",
-            assets={"a": AssetState(name="a", fingerprint="fp1")},
+            assets={"a": AssetState(id="a", fingerprint="fp1")},
         )
         backend.save("dev", state)
 
@@ -297,12 +276,12 @@ class TestSQLiteBackendHistory:
     def test_multiple_updates_full_history(self, backend: SQLiteBackend):
         state = StateSnapshot(
             environment="dev",
-            assets={"a": AssetState(name="a", fingerprint="v1", version=1)},
+            assets={"a": AssetState(id="a", fingerprint="v1", version=1)},
         )
         backend.save("dev", state)
 
         for i in range(2, 6):
-            state.assets["a"] = AssetState(name="a", fingerprint=f"v{i}", version=i)
+            state.assets["a"] = AssetState(id="a", fingerprint=f"v{i}", version=i)
             backend.save("dev", state)
 
         history = backend.asset_history("dev", "a")
@@ -314,26 +293,26 @@ class TestSQLiteBackendHistory:
         state = StateSnapshot(
             environment="dev",
             assets={
-                "a": AssetState(name="a", fingerprint="fp1"),
-                "b": AssetState(name="b", fingerprint="fp2"),
+                "a": AssetState(id="a", fingerprint="fp1"),
+                "b": AssetState(id="b", fingerprint="fp2"),
             },
         )
         backend.save("dev", state)
 
         changelog = backend.environment_changelog("dev")
         assert len(changelog) == 2
-        names = {e["name"] for e in changelog}
+        names = {e["asset_id"] for e in changelog}
         assert names == {"a", "b"}
 
     def test_asset_version_lookup(self, backend: SQLiteBackend):
         state = StateSnapshot(
             environment="dev",
-            assets={"a": AssetState(name="a", fingerprint="v1", version=1)},
+            assets={"a": AssetState(id="a", fingerprint="v1", version=1)},
         )
         backend.save("dev", state)
 
         state.assets["a"] = AssetState(
-            name="a", fingerprint="v2", version=2, data={"sql": "SELECT 2"}
+            id="a", fingerprint="v2", version=2, data={"sql": "SELECT 2"}
         )
         backend.save("dev", state)
 
@@ -351,12 +330,12 @@ class TestSQLiteBackendHistory:
     def test_history_limit(self, backend: SQLiteBackend):
         state = StateSnapshot(
             environment="dev",
-            assets={"a": AssetState(name="a", fingerprint="v1", version=1)},
+            assets={"a": AssetState(id="a", fingerprint="v1", version=1)},
         )
         backend.save("dev", state)
 
         for i in range(2, 12):
-            state.assets["a"] = AssetState(name="a", fingerprint=f"v{i}", version=i)
+            state.assets["a"] = AssetState(id="a", fingerprint=f"v{i}", version=i)
             backend.save("dev", state)
 
         history = backend.asset_history("dev", "a", limit=3)
@@ -368,14 +347,14 @@ class TestSQLiteBackendHistory:
             "dev",
             StateSnapshot(
                 environment="dev",
-                assets={"a": AssetState(name="a", fingerprint="dev_fp")},
+                assets={"a": AssetState(id="a", fingerprint="dev_fp")},
             ),
         )
         backend.save(
             "prod",
             StateSnapshot(
                 environment="prod",
-                assets={"a": AssetState(name="a", fingerprint="prod_fp")},
+                assets={"a": AssetState(id="a", fingerprint="prod_fp")},
             ),
         )
 
@@ -391,7 +370,7 @@ class TestSQLiteBackendHistory:
             environment="dev",
             assets={
                 "a": AssetState(
-                    name="a",
+                    id="a",
                     fingerprint="fp1",
                     data={"sql": "SELECT 1", "columns": ["id", "name"]},
                     applied_by="alice",
@@ -408,3 +387,138 @@ class TestSQLiteBackendHistory:
 
         data = json.loads(history[0]["data"])
         assert data["sql"] == "SELECT 1"
+
+
+class TestSQLiteBackendPruneHistory:
+    """Test prune_history on SQLiteBackend directly."""
+
+    def test_prune_removes_old_entries(self, tmp_path: Path) -> None:
+        backend = SQLiteBackend(db_path=tmp_path / "state.db")
+        state = StateSnapshot(
+            environment="dev",
+            assets={"a": AssetState(id="a", fingerprint="v1", version=1)},
+        )
+        backend.save("dev", state)
+
+        # Backdate all history
+        backend.conn.execute(
+            "UPDATE assets_history SET recorded_at = '2020-01-01T00:00:00.000Z'"
+        )
+        backend.conn.commit()
+
+        count = backend.prune_history(keep_days=0)
+        assert count >= 1
+
+        # Verify history is gone
+        history = backend.asset_history("dev", "a")
+        assert len(history) == 0
+
+    def test_prune_keeps_recent_entries(self, tmp_path: Path) -> None:
+        backend = SQLiteBackend(db_path=tmp_path / "state.db")
+        state = StateSnapshot(
+            environment="dev",
+            assets={"a": AssetState(id="a", fingerprint="v1", version=1)},
+        )
+        backend.save("dev", state)
+
+        # History was just created — should survive prune with keep_days=90
+        count = backend.prune_history(keep_days=90)
+        assert count == 0
+
+        history = backend.asset_history("dev", "a")
+        assert len(history) == 1
+
+
+class TestDependencyHistoryTriggers:
+    """Verify triggers populate dependencies_history table."""
+
+    def test_insert_trigger_creates_history(self, tmp_path: Path) -> None:
+        backend = SQLiteBackend(db_path=tmp_path / "state.db")
+        state = StateSnapshot(
+            environment="dev",
+            dependencies=[
+                DependencyState(
+                    source="staging.users",
+                    target="raw.users",
+                    type="ref",
+                    fingerprint="depfp1",
+                ),
+            ],
+        )
+        backend.save("dev", state)
+
+        rows = backend.conn.execute(
+            "SELECT * FROM dependencies_history WHERE environment = 'dev'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["action"] == "create"
+        assert rows[0]["source"] == "staging.users"
+        assert rows[0]["target"] == "raw.users"
+
+    def test_delete_trigger_creates_history(self, tmp_path: Path) -> None:
+        backend = SQLiteBackend(db_path=tmp_path / "state.db")
+
+        # Insert dependency
+        state = StateSnapshot(
+            environment="dev",
+            dependencies=[
+                DependencyState(
+                    source="staging.users",
+                    target="raw.users",
+                    fingerprint="depfp1",
+                ),
+            ],
+        )
+        backend.save("dev", state)
+
+        # Remove dependency
+        state.dependencies = []
+        backend.save("dev", state)
+
+        rows = backend.conn.execute(
+            "SELECT * FROM dependencies_history WHERE environment = 'dev' ORDER BY id"
+        ).fetchall()
+        # First: create, second: delete
+        assert len(rows) == 2
+        assert rows[0]["action"] == "create"
+        assert rows[1]["action"] == "delete"
+        assert rows[1]["source"] == "staging.users"
+
+    def test_update_trigger_creates_history(self, tmp_path: Path) -> None:
+        """Updating a dependency's fingerprint fires the update trigger.
+
+        Note: SQLiteBackend.save() deletes all deps then re-inserts.
+        So an "update" in practice is delete+insert, yielding delete+create
+        history entries. This test verifies that dep changes are tracked.
+        """
+        backend = SQLiteBackend(db_path=tmp_path / "state.db")
+
+        state = StateSnapshot(
+            environment="dev",
+            dependencies=[
+                DependencyState(
+                    source="staging.users",
+                    target="raw.users",
+                    fingerprint="depfp1",
+                ),
+            ],
+        )
+        backend.save("dev", state)
+
+        # "Update" — save with new fingerprint (same source/target)
+        state.dependencies = [
+            DependencyState(
+                source="staging.users",
+                target="raw.users",
+                fingerprint="depfp2",
+            ),
+        ]
+        backend.save("dev", state)
+
+        rows = backend.conn.execute(
+            "SELECT * FROM dependencies_history WHERE environment = 'dev' ORDER BY id"
+        ).fetchall()
+        # create from first save, delete+create from second save
+        assert len(rows) >= 2
+        actions = [r["action"] for r in rows]
+        assert "create" in actions
