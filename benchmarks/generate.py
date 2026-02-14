@@ -8,7 +8,6 @@ standalone end-to-end script.
 from __future__ import annotations
 
 import random
-from typing import Any
 
 from assets.core.asset import Asset
 from assets.core.dependency import Dependency
@@ -87,16 +86,3 @@ def generate_assets(
             dependencies.append(Dependency(source=dep_id, target=asset.id, type="ref"))
 
     return assets, dependencies
-
-
-def generate_snapshot_dict(
-    n: int,
-    *,
-    seed: int = 42,
-) -> dict[str, Any]:
-    """Generate a dict of asset data suitable for StateSnapshot construction."""
-    assets, deps = generate_assets(n, seed=seed)
-    return {
-        "assets": {a.id: a for a in assets},
-        "dependencies": deps,
-    }

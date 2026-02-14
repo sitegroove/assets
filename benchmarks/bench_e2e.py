@@ -35,8 +35,6 @@ from generate import generate_assets
 from assets.core.graph import AssetGraph
 from assets.core.registry import Registry
 from assets.engine.differ import Differ
-from assets.engine.manager import StateManager
-from assets.engine.planner import Plan
 from assets.state.models import AssetState, StateSnapshot
 from assets.state.sqlite import SQLiteBackend
 
@@ -243,12 +241,6 @@ def main() -> None:
         print(header)
         print(f"  {'─' * (25 + 11 * len(args.sizes))}")
         for op in ops:
-            row = f"  {op:<25}"
-            for s in args.sizes:
-                data = all_results.get(str(s), {}).get(op, {})
-                val = data.get("median_ms", 0)
-                row += f" {val:>9.1f}m" if val else f" {'n/a':>10}"
-                # Fix: just use the number
             print(
                 f"  {op:<25}"
                 + "".join(
