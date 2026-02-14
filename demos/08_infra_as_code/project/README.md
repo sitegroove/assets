@@ -12,5 +12,5 @@ The files are declarative only. They do not create cloud resources.
 Run the full workflow:
 
 ```bash
-python demos/08_fake_google_cloud_resources/main.py
+python demos/08_infra_as_code/main.py
 ```
