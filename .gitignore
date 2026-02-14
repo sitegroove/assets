@@ -208,3 +208,6 @@ __marimo__/
 
 # Opencode
 .opencode/
+
+# Assets
+.assets_state
