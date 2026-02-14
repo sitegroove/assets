@@ -1,0 +1,20 @@
+[tools]
+node = "22.22"
+uv = "latest"
+
+[settings]
+experimental = true # needed for some features
+
+[env]
+# TTY handling for CI/CD
+TTY = "{% if env.CI %}-T{% else %}{% endif %}"
+
+# Install Scripts
+[tasks."install:dev"]
+description = "Install Dev Scripts"
+run = '''
+#!/usr/bin/env bash
+curl -fsSL https://opencode.ai/install | bash
+npx get-shit-done-cc --opencode --global
+npx skills
+'''

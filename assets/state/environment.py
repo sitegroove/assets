@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Environment(BaseModel):
@@ -13,14 +13,15 @@ class Environment(BaseModel):
     name: str
     parent: str | None = None
     shallow: bool = False
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class EnvironmentConfig(BaseModel):
     """Configuration for all environments."""
 
-    environments: dict[str, Environment] = {}
+    environments: dict[str, Environment] = Field(default_factory=dict)
     default: str = "development"
+    allow_implicit_environments: bool = True
 
     def get(self, name: str | None = None) -> Environment:
         """Get environment by name, falling back to default.
@@ -32,5 +33,12 @@ class EnvironmentConfig(BaseModel):
         env_name = name or self.default
         if env_name in self.environments:
             return self.environments[env_name]
-        # Auto-create for unknown names (e.g., ephemeral PR environments)
-        return Environment(name=env_name)
+        if self.allow_implicit_environments:
+            # Auto-create for unknown names (e.g., ephemeral PR environments)
+            return Environment(name=env_name)
+        available = sorted(self.environments.keys())
+        raise ValueError(
+            f"Environment '{env_name}' is not configured. "
+            f"Available: {available}. "
+            "Set allow_implicit_environments=True to auto-create unknown names."
+        )

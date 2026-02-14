@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from assets.core.registry import Registry
 from assets.engine.differ import Differ
 from assets.engine.planner import Plan
-from assets.loader.project import ProjectLoader
 from assets.state.backend import StateBackend
 from assets.state.environment import Environment, EnvironmentConfig
 from assets.state.models import AssetState, DependencyState, StateSnapshot
+
+if TYPE_CHECKING:
+    from assets.index.file import FileIndex
 
 PROTECTED_ENVIRONMENTS = {"production", "staging"}
 
@@ -37,79 +40,54 @@ class ApplyResult(BaseModel):
 class ResolvedState(BaseModel):
     """State after walking parent chain and merging layers."""
 
-    assets: dict[str, AssetState] = {}
-    dependencies: list[DependencyState] = []
-    metadata: dict[str, Any] = {}
+    assets: dict[str, AssetState] = Field(default_factory=dict)
+    dependencies: list[DependencyState] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class StateManager:
-    """Main orchestrator: combines loader, registry, backend, environments.
+    """Main orchestrator: combines registry, backend, environments.
 
     Typical usage::
 
-        manager = StateManager.from_dir("./models")
-        plan = manager.plan("./models")
+        manager = StateManager.create(registry, local_path=".assets_state")
+        plan = manager.plan(environment="production")
         manager.apply(plan)
     """
 
     def __init__(
         self,
         registry: Registry,
-        loader: ProjectLoader,
         backend: StateBackend,
         env_config: EnvironmentConfig,
     ) -> None:
         self.registry = registry
-        self.loader = loader
         self.backend = backend
         self.env_config = env_config
         self._differ = Differ()
+        self._index: FileIndex | None = None
 
     @classmethod
-    def from_dir(
+    def create(
         cls,
-        project_dir: str = ".",
+        registry: Registry,
         *,
-        backend: StateBackend | str | None = None,
+        local_path: str,
         environments: dict[str, Environment] | None = None,
         default_env: str = "production",
-        asset_class: type | None = None,
-        cache_dir: str | None = None,
     ) -> StateManager:
         """Convenience factory for common setups.
 
         Args:
-            project_dir: Path to the project directory.
-            backend: A StateBackend instance, or a URL string for FsspecBackend
-                     (e.g., "s3://bucket/state", "gcs://bucket/state").
-                     Defaults to LocalJSONBackend.
-            environments: Dict of environments. Defaults to a single production env.
+            registry: Registry containing the assets to manage.
+            local_path: Directory for the SQLite state database.
+            environments: Dict of environments. Defaults to a single
+                production env.
             default_env: Default environment name.
-            asset_class: Asset subclass for the loader. Defaults to Asset.
-            cache_dir: Compiled cache directory. Defaults to <project_dir>/.assets_state/compiled.
         """
-        from assets.core.asset import Asset
+        from assets.state.sqlite import SQLiteBackend
 
-        registry = Registry()
-
-        resolved_asset_class = asset_class or Asset
-        resolved_cache_dir = cache_dir or f"{project_dir}/.assets_state/compiled"
-        loader = ProjectLoader(
-            registry,
-            asset_class=resolved_asset_class,
-            cache_dir=resolved_cache_dir,
-        )
-
-        if backend is None:
-            from assets.state.local import LocalJSONBackend
-
-            resolved_backend: StateBackend = LocalJSONBackend()
-        elif isinstance(backend, str):
-            from assets.state.fsspec import FsspecBackend
-
-            resolved_backend = FsspecBackend(backend)
-        else:
-            resolved_backend = backend
+        backend = SQLiteBackend(db_path=Path(local_path) / "state.db")
 
         if environments is None:
             environments = {default_env: Environment(name=default_env)}
@@ -118,21 +96,54 @@ class StateManager:
             default=default_env,
             environments=environments,
         )
+        return cls(registry, backend, env_config)
 
-        return cls(registry, loader, resolved_backend, env_config)
+    @property
+    def index(self) -> FileIndex:
+        """Lazy :class:`~assets.index.file.FileIndex` for file change detection.
+
+        Requires a file-backed :class:`~assets.state.sqlite.SQLiteBackend`
+        (or :class:`~assets.state.tiered.TieredBackend`) as the backend.
+        In-memory backends (``SQLiteBackend(":memory:")``) do not support
+        file indexing because there is no filesystem directory for the
+        mtime cache.
+        """
+        if self._index is not None:
+            return self._index
+
+        from assets.index.file import FileIndex
+        from assets.state.sqlite import SQLiteBackend
+        from assets.state.tiered import TieredBackend
+
+        if isinstance(self.backend, TieredBackend):
+            backend = self.backend._local
+        elif isinstance(self.backend, SQLiteBackend):
+            backend = self.backend
+        else:
+            raise RuntimeError(
+                "FileIndex requires a SQLiteBackend or "
+                "TieredBackend. Got: "
+                f"{type(self.backend).__name__}"
+            )
+
+        local_path = backend.local_path
+        if local_path is None:
+            raise RuntimeError(
+                "FileIndex requires a file-backed SQLiteBackend. "
+                "In-memory backends do not have a local path "
+                "for the mtime cache."
+            )
+
+        self._index = FileIndex(backend.conn, local_path)
+        return self._index
 
     def plan(
         self,
-        project_dir: str,
         environment: str | None = None,
         selector: str | None = None,
     ) -> Plan:
-        """Detect changes between files on disk and applied state."""
+        """Detect changes between current registry and applied state."""
         env = self.env_config.get(environment)
-
-        # Load all assets from project
-        self.registry.clear()
-        self.loader.load(project_dir)
 
         # Get desired assets (optionally filtered by selector)
         if selector:
@@ -155,54 +166,51 @@ class StateManager:
     def apply(self, plan: Plan, environment: str | None = None) -> ApplyResult:
         """Apply a plan to state. Acquires lock, writes changes, releases."""
         env_name = environment or plan.environment
+        env = self.env_config.get(env_name)
         if not plan.changeset.asset_changes:
             return ApplyResult(environment=env_name)
-        env = self.env_config.get(env_name)
 
         with self.backend.lock(env_name):
             state = self.backend.load(env_name)
             if state is None:
                 state = StateSnapshot(environment=env_name)
 
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             created = 0
             updated = 0
             deleted = 0
 
             for change in plan.changeset.asset_changes:
-                if change.action == "create":
-                    state.assets[change.asset_name] = AssetState(
-                        name=change.asset_name,
-                        kind=change.after.get("kind", "") if change.after else "",
+                if change.action in ("create", "update"):
+                    existing = state.assets.get(change.asset_id)
+                    new_version = (existing.version + 1) if existing else 1
+                    state.assets[change.asset_id] = AssetState(
+                        id=change.asset_id,
+                        type=(change.after.get("type", "") if change.after else ""),
                         fingerprint=change.after_fingerprint or "",
                         data=change.after or {},
                         applied_at=now,
+                        version=new_version,
                     )
-                    created += 1
-
-                elif change.action == "update":
-                    state.assets[change.asset_name] = AssetState(
-                        name=change.asset_name,
-                        kind=change.after.get("kind", "") if change.after else "",
-                        fingerprint=change.after_fingerprint or "",
-                        data=change.after or {},
-                        applied_at=now,
-                    )
-                    updated += 1
+                    if change.action == "create":
+                        created += 1
+                    else:
+                        updated += 1
 
                 elif change.action == "delete":
                     if env.shallow:
                         # Tombstone for shallow envs
-                        existing = state.assets.get(change.asset_name)
+                        existing = state.assets.get(change.asset_id)
                         if existing:
                             existing.deleted = True
                             existing.applied_at = now
                     else:
-                        state.assets.pop(change.asset_name, None)
+                        state.assets.pop(change.asset_id, None)
                     deleted += 1
 
             state.updated_at = now
-            self.backend.save(env_name, state)
+            changed_ids = {c.asset_id for c in plan.changeset.asset_changes}
+            self.backend.save(env_name, state, changed_ids=changed_ids)
 
         return ApplyResult(
             applied=created + updated + deleted,
@@ -212,12 +220,12 @@ class StateManager:
             environment=env_name,
         )
 
-    def drift(self, project_dir: str, environment: str | None = None) -> Plan:
-        """Detect drift: compare state against current files.
+    def drift(self, environment: str | None = None) -> Plan:
+        """Detect drift: compare state against current registry.
 
-        Same as plan() — compares what's on disk vs. what's in state.
+        Same as plan() — compares what's in registry vs. what's in state.
         """
-        return self.plan(project_dir, environment=environment)
+        return self.plan(environment=environment)
 
     def promote(
         self,
@@ -242,14 +250,21 @@ class StateManager:
         if selector:
             # Filter source assets by name matching
             # Load registry to use selector
+            from assets.core.dependency import Dependency
             from assets.core.graph import AssetGraph
 
             temp_assets = {}
+            temp_dependencies: list[Dependency] = []
             for name, asset_state in source_assets.items():
                 if not asset_state.deleted:
-                    temp_assets[name] = Asset.model_validate(asset_state.data)
+                    asset = Asset.model_validate(asset_state.data)
+                    temp_assets[name] = asset
+                    for dep_name in dict.fromkeys(asset.depends_on):
+                        temp_dependencies.append(
+                            Dependency(source=dep_name, target=asset.id, type="ref")
+                        )
 
-            graph = AssetGraph.build(temp_assets, [])
+            graph = AssetGraph.build(temp_assets, temp_dependencies)
             selection = graph.select(selector)
             selected_names = selection.names
         else:
@@ -332,6 +347,10 @@ class StateManager:
 
         return ResolvedState(
             assets=merged_assets,
-            dependencies=state.dependencies or parent_resolved.dependencies,
+            dependencies=(
+                state.dependencies
+                if state.dependencies is not None
+                else parent_resolved.dependencies
+            ),
             metadata={**parent_resolved.metadata, **state.metadata},
         )

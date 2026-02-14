@@ -1,0 +1,23 @@
+id: stg_campaigns
+type: staging
+description: Cleaned Google Ads campaigns
+materialized: view
+tags:
+  - google_ads
+  - marketing
+children:
+  - id: campaign_id
+    type: VARCHAR
+    description: Primary key
+  - id: campaign_name
+    type: VARCHAR
+    description: Campaign display name
+  - id: daily_budget
+    type: DECIMAL
+    description: Daily budget in dollars
+  - id: is_active
+    type: BOOLEAN
+    description: Whether campaign is currently enabled
+  - id: started_at
+    type: DATE
+    description: Campaign start date

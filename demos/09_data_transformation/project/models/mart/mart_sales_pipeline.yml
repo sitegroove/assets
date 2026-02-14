@@ -1,0 +1,46 @@
+id: mart_sales_pipeline
+type: mart
+description: Sales pipeline analytics by account with contact and deal metrics
+materialized: table
+tags:
+  - salesforce
+  - finance
+  - executive
+children:
+  - id: account_id
+    type: VARCHAR
+    description: Primary key
+  - id: account_name
+    type: VARCHAR
+    description: Company name
+  - id: industry
+    type: VARCHAR
+    description: Industry vertical
+  - id: contact_count
+    type: INTEGER
+    description: Number of contacts
+  - id: total_pipeline
+    type: DECIMAL
+    description: Total pipeline value in USD
+  - id: won_amount
+    type: DECIMAL
+    description: Total won revenue in USD
+  - id: win_rate
+    type: DECIMAL
+    description: Deal win rate (0-1)
+  - id: avg_deal_size
+    type: DECIMAL
+    description: Average deal size in USD
+metrics:
+  - name: total_pipeline_value
+    expression: "SUM(total_pipeline)"
+    description: Total value of all deals in pipeline
+    time_grain: month
+  - name: total_won_revenue
+    expression: "SUM(won_amount)"
+    description: Total closed-won revenue
+    time_grain: month
+tests:
+  - name: mart_sales_pipeline_pk
+    type: not_null
+    column: account_id

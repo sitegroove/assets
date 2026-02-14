@@ -1,31 +1,21 @@
-"""State models — snapshots, asset state, source file refs."""
+"""State models — snapshots, asset state."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class SourceFileRef(BaseModel):
-    """Reference to a source file that produced an asset."""
-
-    path: str
-    content_hash: str
-    sql_path: str | None = None
-    sql_content_hash: str | None = None
-
-
 class AssetState(BaseModel):
     """The persisted state of a single asset."""
 
-    name: str
-    kind: str = ""
+    id: str
+    type: str = ""
     fingerprint: str
-    data: dict[str, Any] = {}
-    source_files: list[SourceFileRef] = []
-    applied_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    data: dict[str, Any] = Field(default_factory=dict)
+    applied_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     applied_by: str = ""
     version: int = 1
     deleted: bool = False
@@ -38,7 +28,7 @@ class DependencyState(BaseModel):
     target: str
     type: str = ""
     fingerprint: str
-    data: dict[str, Any] = {}
+    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class StateSnapshot(BaseModel):
@@ -46,8 +36,8 @@ class StateSnapshot(BaseModel):
 
     version: int = 1
     environment: str = ""
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    assets: dict[str, AssetState] = {}
-    dependencies: list[DependencyState] = []
-    metadata: dict[str, Any] = {}
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    assets: dict[str, AssetState] = Field(default_factory=dict)
+    dependencies: list[DependencyState] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)

@@ -1,0 +1,32 @@
+id: stg_contacts
+type: staging
+description: Cleaned Salesforce contacts with PII-aware columns
+materialized: view
+tags:
+  - salesforce
+  - crm
+  - pii
+children:
+  - id: contact_id
+    type: VARCHAR
+    description: Primary key
+  - id: account_id
+    type: VARCHAR
+    description: FK to stg_accounts
+  - id: full_name
+    type: VARCHAR
+    description: Concatenated first + last name
+    pii: true
+    classification: confidential
+  - id: email
+    type: VARCHAR
+    description: Contact email address
+    pii: true
+    classification: restricted
+  - id: job_title
+    type: VARCHAR
+    description: Job title
+tests:
+  - name: stg_contacts_pk
+    type: not_null
+    column: contact_id

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from assets.core.asset import Asset
 from assets.state.models import AssetState
@@ -22,19 +22,19 @@ class Change(BaseModel):
     """A single asset or dependency change."""
 
     action: Literal["create", "update", "delete"]
-    asset_name: str
+    asset_id: str
     before: dict[str, Any] | None = None
     after: dict[str, Any] | None = None
     before_fingerprint: str | None = None
     after_fingerprint: str | None = None
-    field_changes: list[FieldChange] = []
+    field_changes: list[FieldChange] = Field(default_factory=list)
 
 
 class ChangeSet(BaseModel):
     """Collection of changes for a plan."""
 
-    asset_changes: list[Change] = []
-    dependency_changes: list[Change] = []
+    asset_changes: list[Change] = Field(default_factory=list)
+    dependency_changes: list[Change] = Field(default_factory=list)
 
 
 class Differ:
@@ -48,30 +48,32 @@ class Differ:
         desired_names: set[str] = set()
 
         for asset in desired:
-            desired_names.add(asset.name)
-            existing = current.get(asset.name)
+            desired_names.add(asset.id)
+            existing = current.get(asset.id)
+            fp = asset.fingerprint  # cached — computed once
 
             if existing is None or existing.deleted:
                 # New asset
                 asset_changes.append(
                     Change(
                         action="create",
-                        asset_name=asset.name,
+                        asset_id=asset.id,
                         after=asset.model_dump(),
-                        after_fingerprint=asset.fingerprint,
+                        after_fingerprint=fp,
                     )
                 )
-            elif existing.fingerprint != asset.fingerprint:
+            elif existing.fingerprint != fp:
                 # Changed asset — compute deep diff
-                field_changes = self._deep_diff(existing.data, asset.model_dump())
+                dumped = asset.model_dump()
+                field_changes = self._deep_diff(existing.data, dumped)
                 asset_changes.append(
                     Change(
                         action="update",
-                        asset_name=asset.name,
+                        asset_id=asset.id,
                         before=existing.data,
-                        after=asset.model_dump(),
+                        after=dumped,
                         before_fingerprint=existing.fingerprint,
-                        after_fingerprint=asset.fingerprint,
+                        after_fingerprint=fp,
                         field_changes=field_changes,
                     )
                 )
@@ -83,7 +85,7 @@ class Differ:
                 asset_changes.append(
                     Change(
                         action="delete",
-                        asset_name=name,
+                        asset_id=name,
                         before=state.data,
                         before_fingerprint=state.fingerprint,
                     )
@@ -91,9 +93,7 @@ class Differ:
 
         return ChangeSet(asset_changes=asset_changes)
 
-    def _deep_diff(
-        self, old: dict[str, Any], new: dict[str, Any]
-    ) -> list[FieldChange]:
+    def _deep_diff(self, old: dict[str, Any], new: dict[str, Any]) -> list[FieldChange]:
         """Field-by-field comparison between old and new asset dicts."""
         changes: list[FieldChange] = []
         all_keys = set(old.keys()) | set(new.keys())
@@ -105,6 +105,8 @@ class Differ:
             old_val = old.get(key)
             new_val = new.get(key)
             if old_val != new_val:
-                changes.append(FieldChange(field=key, old_value=old_val, new_value=new_val))
+                changes.append(
+                    FieldChange(field=key, old_value=old_val, new_value=new_val)
+                )
 
         return changes

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
@@ -14,7 +14,7 @@ class Plan(BaseModel):
 
     changeset: ChangeSet = Field(default_factory=ChangeSet)
     environment: str = ""
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def has_changes(self) -> bool:
@@ -41,18 +41,18 @@ class Plan(BaseModel):
         if creates:
             lines.append(f"  + {len(creates)} to create:")
             for c in creates:
-                lines.append(f"    + {c.asset_name}")
+                lines.append(f"    + {c.asset_id}")
 
         if updates:
             lines.append(f"  ~ {len(updates)} to update:")
             for c in updates:
                 changed_fields = ", ".join(fc.field for fc in c.field_changes)
-                lines.append(f"    ~ {c.asset_name} ({changed_fields})")
+                lines.append(f"    ~ {c.asset_id} ({changed_fields})")
 
         if deletes:
             lines.append(f"  - {len(deletes)} to delete:")
             for c in deletes:
-                lines.append(f"    - {c.asset_name}")
+                lines.append(f"    - {c.asset_id}")
 
         lines.append("")
         total = len(creates) + len(updates) + len(deletes)

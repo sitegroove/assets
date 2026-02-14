@@ -1,8 +1,9 @@
-"""Selector parser — query assets by name, tag, kind, and graph traversal."""
+"""Selector parser — query assets by name, tag, type, and graph traversal."""
 
 from __future__ import annotations
 
 import fnmatch
+import logging
 import re
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
 _GRAPH_PATTERN = re.compile(
     r"^(?P<upstream>\+)?(?P<name>.+?)(?P<downstream>\+(?P<depth>\d+)?)?$"
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SelectorParser:
@@ -29,16 +32,19 @@ class SelectorParser:
         Supported syntax:
             staging.users       — exact match
             tag:pii             — all with tag "pii"
-            kind:data_model     — all with kind "data_model"
+            type:data_model     — all with type "data_model"
             +staging.users      — asset + all ancestors
             staging.users+      — asset + all descendants
             +staging.users+     — asset + ancestors + descendants
             raw.*               — wildcard name match
-            tag:pii,kind:data_model — intersection (AND)
+            tag:pii,type:data_model — intersection (AND)
             staging.users+2     — descendants up to depth 2
         """
         # Comma-separated = intersection (AND)
         parts = [p.strip() for p in selector.split(",")]
+        if not any(parts):
+            return SelectionResult(warnings=["Selector is empty."])
+
         if len(parts) > 1:
             result_sets = [self._execute_single(p) for p in parts]
             intersected = result_sets[0]
@@ -58,39 +64,61 @@ class SelectorParser:
         return self._resolve(selector).names
 
     def _resolve(self, selector: str) -> SelectionResult:
+        selector = selector.strip()
+        if not selector:
+            return SelectionResult(warnings=["Selector is empty."])
+
         # tag:X
         if selector.startswith("tag:"):
             tag = selector[4:]
-            names = {
-                n for n, a in self._graph.assets.items() if tag in getattr(a, "tags", [])
-            }
+            warnings: list[str] = []
+            if not tag:
+                warnings.append("Tag selector has an empty value.")
+            names = self._graph.names_by_tag(tag)
             matched = [self._graph.assets[n] for n in sorted(names)]
-            return SelectionResult(assets=matched, names=names)
+            return SelectionResult(assets=matched, names=names, warnings=warnings)
 
-        # kind:X
-        if selector.startswith("kind:"):
-            kind = selector[5:]
-            names = {
-                n for n, a in self._graph.assets.items() if getattr(a, "kind", "") == kind
-            }
+        # type:X
+        if selector.startswith("type:"):
+            type_val = selector[5:]
+            warnings: list[str] = []
+            if not type_val:
+                warnings.append("Type selector has an empty value.")
+            names = self._graph.names_by_type(type_val)
             matched = [self._graph.assets[n] for n in sorted(names)]
-            return SelectionResult(assets=matched, names=names)
+            return SelectionResult(assets=matched, names=names, warnings=warnings)
 
         # Graph traversal patterns: +name, name+, +name+, name+2
         m = _GRAPH_PATTERN.match(selector)
         if not m:
-            return SelectionResult()
+            return SelectionResult(warnings=[f"Invalid selector syntax: '{selector}'."])
 
         name_part = m.group("name")
         upstream = m.group("upstream") is not None
         downstream = m.group("downstream") is not None and m.group("downstream") != ""
         depth_str = m.group("depth")
         max_depth = int(depth_str) if depth_str else None
+        warnings: list[str] = []
+
+        if "+" in name_part:
+            warnings.append(
+                "Selector has an unexpected '+' in asset name. "
+                "Use graph traversal as '+asset', 'asset+', or 'asset+N'."
+            )
+        if selector.startswith("+") and len(selector) > 1 and selector[1].isdigit():
+            warnings.append(
+                "Selector starts with '+<digit>'. Did you mean '+asset' or 'asset+N'?"
+            )
 
         # Resolve name_part (could be wildcard)
         base_names = self._match_names(name_part)
         if not base_names:
-            return SelectionResult()
+            if warnings:
+                for warning in warnings:
+                    logger.warning(
+                        "Selector warning: %s selector=%r", warning, selector
+                    )
+            return SelectionResult(warnings=warnings)
 
         # Expand graph traversal
         result_names: set[str] = set(base_names)
@@ -101,9 +129,14 @@ class SelectorParser:
                 result_names |= self._graph.descendants(base, max_depth)
 
         matched = [
-            self._graph.assets[n] for n in sorted(result_names) if n in self._graph.assets
+            self._graph.assets[n]
+            for n in sorted(result_names)
+            if n in self._graph.assets
         ]
-        return SelectionResult(assets=matched, names=result_names)
+        if warnings:
+            for warning in warnings:
+                logger.warning("Selector warning: %s selector=%r", warning, selector)
+        return SelectionResult(assets=matched, names=result_names, warnings=warnings)
 
     def _match_names(self, pattern: str) -> set[str]:
         """Match asset names by exact match or wildcard."""

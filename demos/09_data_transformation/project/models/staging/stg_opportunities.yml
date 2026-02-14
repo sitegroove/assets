@@ -1,0 +1,42 @@
+id: stg_opportunities
+type: staging
+description: Cleaned Salesforce opportunities with normalised amounts
+materialized: view
+tags:
+  - salesforce
+  - crm
+  - finance
+children:
+  - id: opportunity_id
+    type: VARCHAR
+    description: Primary key
+  - id: account_id
+    type: VARCHAR
+    description: FK to stg_accounts
+  - id: opportunity_name
+    type: VARCHAR
+    description: Deal name
+  - id: amount_usd
+    type: DECIMAL
+    description: Deal value in USD
+  - id: stage
+    type: VARCHAR
+    description: Pipeline stage
+  - id: is_won
+    type: BOOLEAN
+    description: Whether the deal was won
+  - id: close_date
+    type: DATE
+    description: Expected or actual close date
+  - id: created_at
+    type: TIMESTAMP
+    description: Opportunity creation timestamp
+tests:
+  - name: stg_opportunities_pk
+    type: not_null
+    column: opportunity_id
+  - name: stg_opportunities_positive_amount
+    type: custom_sql
+    config:
+      sql: "SELECT * FROM stg_opportunities WHERE amount_usd < 0"
+    severity: warn

@@ -12,18 +12,14 @@ class TestPlan:
 
     def test_has_changes(self):
         cs = ChangeSet(
-            asset_changes=[
-                Change(action="create", asset_name="new", after={"name": "new"})
-            ]
+            asset_changes=[Change(action="create", asset_id="new", after={"id": "new"})]
         )
         plan = Plan(changeset=cs, environment="dev")
         assert plan.has_changes
 
     def test_show_create(self):
         cs = ChangeSet(
-            asset_changes=[
-                Change(action="create", asset_name="new", after={"name": "new"})
-            ]
+            asset_changes=[Change(action="create", asset_id="new", after={"id": "new"})]
         )
         plan = Plan(changeset=cs, environment="dev")
         output = plan.show()
@@ -37,20 +33,22 @@ class TestPlan:
             asset_changes=[
                 Change(
                     action="update",
-                    asset_name="test",
-                    field_changes=[FieldChange(field="kind", old_value="v1", new_value="v2")],
+                    asset_id="test",
+                    field_changes=[
+                        FieldChange(field="type", old_value="v1", new_value="v2")
+                    ],
                 )
             ]
         )
         plan = Plan(changeset=cs, environment="dev")
         output = plan.show()
         assert "~ test" in output
-        assert "kind" in output
+        assert "type" in output
 
     def test_show_delete(self):
         cs = ChangeSet(
             asset_changes=[
-                Change(action="delete", asset_name="old", before={"name": "old"})
+                Change(action="delete", asset_id="old", before={"id": "old"})
             ]
         )
         plan = Plan(changeset=cs, environment="dev")
@@ -60,9 +58,9 @@ class TestPlan:
     def test_show_mixed(self):
         cs = ChangeSet(
             asset_changes=[
-                Change(action="create", asset_name="new"),
-                Change(action="update", asset_name="mod", field_changes=[]),
-                Change(action="delete", asset_name="old"),
+                Change(action="create", asset_id="new"),
+                Change(action="update", asset_id="mod", field_changes=[]),
+                Change(action="delete", asset_id="old"),
             ]
         )
         plan = Plan(changeset=cs, environment="dev")
@@ -72,7 +70,7 @@ class TestPlan:
     def test_show_update_with_no_field_changes(self):
         cs = ChangeSet(
             asset_changes=[
-                Change(action="update", asset_name="test", field_changes=[]),
+                Change(action="update", asset_id="test", field_changes=[]),
             ]
         )
         plan = Plan(changeset=cs, environment="dev")
@@ -88,7 +86,7 @@ class TestPlan:
     def test_has_changes_with_dependency_changes_only(self):
         cs = ChangeSet(
             dependency_changes=[
-                Change(action="create", asset_name="dep_a_b"),
+                Change(action="create", asset_id="dep_a_b"),
             ]
         )
         plan = Plan(changeset=cs, environment="dev")

@@ -8,32 +8,29 @@ from assets.core.registry import Registry
 from assets.engine.differ import Change, ChangeSet, Differ, FieldChange
 from assets.engine.manager import ApplyResult, StateManager
 from assets.engine.planner import Plan
-from assets.loader.compiled import CompiledCache
-from assets.loader.project import LoadError, LoadResult, ProjectLoader
-from assets.loader.sqlite_cache import SQLiteCompiledCache
-from assets.resolver.lineage import LineageResolver
-from assets.resolver.ref import RefResolver
+from assets.index.base import Index
+from assets.index.file import FileIndex, IndexStatus
+from assets.loader.discovery import (
+    DiscoveredFile,
+    DiscoveryResult,
+    FileDiscovery,
+    GroupLoadResult,
+    LoadedAsset,
+    Loader,
+    LoadResult,
+    SourceGroup,
+)
+from assets.resolver.lineage import DependencyResolver
 from assets.selector.parser import SelectorParser
 from assets.state.backend import StateBackend
 from assets.state.environment import Environment, EnvironmentConfig
-from assets.state.local import LocalJSONBackend
-from assets.state.memory import MemoryBackend
-from assets.state.models import AssetState, DependencyState, SourceFileRef, StateSnapshot
+from assets.state.models import (
+    AssetState,
+    DependencyState,
+    StateSnapshot,
+)
 from assets.state.sqlite import SQLiteBackend
-
-# Lazy import for optional dependency
-_FSSPEC_BACKEND_LOADED = False
-
-
-def __getattr__(name: str) -> object:
-    global _FSSPEC_BACKEND_LOADED  # noqa: PLW0603
-    if name == "FsspecBackend" and not _FSSPEC_BACKEND_LOADED:
-        from assets.state.fsspec import FsspecBackend
-
-        _FSSPEC_BACKEND_LOADED = True
-        globals()["FsspecBackend"] = FsspecBackend
-        return FsspecBackend
-    raise AttributeError(f"module 'assets' has no attribute {name!r}")
+from assets.state.tiered import TieredBackend
 
 __all__ = [
     # Core
@@ -44,29 +41,32 @@ __all__ = [
     "FieldMapping",
     "Registry",
     "SelectionResult",
+    # Index
+    "FileIndex",
+    "Index",
+    "IndexStatus",
+    # Loader
+    "DiscoveredFile",
+    "DiscoveryResult",
+    "FileDiscovery",
+    "GroupLoadResult",
+    "LoadedAsset",
+    "LoadResult",
+    "Loader",
+    "SourceGroup",
     # Resolver
-    "LineageResolver",
-    "RefResolver",
+    "DependencyResolver",
     # Selector
     "SelectorParser",
-    # Loader
-    "CompiledCache",
-    "LoadError",
-    "LoadResult",
-    "ProjectLoader",
-    "SQLiteCompiledCache",
     # State
     "AssetState",
     "DependencyState",
     "Environment",
     "EnvironmentConfig",
-    "FsspecBackend",
-    "LocalJSONBackend",
-    "MemoryBackend",
     "SQLiteBackend",
-    "SourceFileRef",
     "StateBackend",
     "StateSnapshot",
+    "TieredBackend",
     # Engine
     "ApplyResult",
     "Change",

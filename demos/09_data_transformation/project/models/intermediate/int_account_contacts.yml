@@ -1,0 +1,32 @@
+id: int_account_contacts
+type: intermediate
+description: Accounts enriched with aggregated contact information
+materialized: view
+tags:
+  - salesforce
+children:
+  - id: account_id
+    type: VARCHAR
+    description: Primary key
+  - id: account_name
+    type: VARCHAR
+    description: Company name
+  - id: industry
+    type: VARCHAR
+    description: Industry vertical
+  - id: annual_revenue
+    type: DECIMAL
+    description: Self-reported annual revenue
+  - id: contact_count
+    type: INTEGER
+    description: Total number of contacts at the account
+  - id: primary_contact_name
+    type: VARCHAR
+    description: Name of the first contact (alphabetically)
+    pii: true
+    classification: confidential
+  - id: primary_contact_email
+    type: VARCHAR
+    description: Email of the first contact
+    pii: true
+    classification: restricted

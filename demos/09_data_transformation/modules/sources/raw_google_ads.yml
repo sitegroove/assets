@@ -1,0 +1,41 @@
+source: landing_google_ads
+description: Google Ads data (module-local source definition)
+
+tables:
+  - name: campaigns
+    id: raw_campaigns
+    description: Google Ads campaign definitions
+    tags:
+      - google_ads
+    columns:
+      - id: campaign_id
+        type: VARCHAR
+      - id: campaign_name
+        type: VARCHAR
+      - id: budget_amount
+        type: DECIMAL
+      - id: status
+        type: VARCHAR
+      - id: start_date
+        type: DATE
+      - id: end_date
+        type: DATE
+
+  - name: ad_performance
+    id: raw_ad_performance
+    description: Daily ad performance metrics
+    tags:
+      - google_ads
+    columns:
+      - id: date
+        type: DATE
+      - id: campaign_id
+        type: VARCHAR
+      - id: impressions
+        type: INTEGER
+      - id: clicks
+        type: INTEGER
+      - id: cost_micros
+        type: BIGINT
+      - id: conversions
+        type: DECIMAL

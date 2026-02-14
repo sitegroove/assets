@@ -1,0 +1,5 @@
+# Google Ads sources are provided by the external google_ads module
+# in modules/sources/raw_google_ads.yml.
+#
+# This file exists as documentation only.  The module package owns the
+# source definitions and staging models for Google Ads data.

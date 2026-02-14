@@ -1,0 +1,19 @@
+services:
+  assets-dev:
+    env_file: .env
+    volumes:
+      - '${LOCAL_WORKSPACE_FOLDER:-.}:/app'
+      - 'assets-vscode-extensions:/root/.vscode-server/extensions'
+      - 'assets-vscode-extensions-insiders:/root/.vscode-server-insiders/extensions'
+    image: assets-dev
+    build:
+      context: .
+    init: true
+    container_name: assets-dev
+    command: sleep infinity
+
+volumes:
+  assets-vscode-extensions:
+    driver: local
+  assets-vscode-extensions-insiders:
+    driver: local

@@ -1,0 +1,33 @@
+exposures:
+  - id: sales_dashboard
+    description: Executive sales pipeline dashboard in Looker
+    depends_on:
+      - mart_sales_pipeline
+      - mart_account_360
+    tags:
+      - executive
+      - looker
+    owner:
+      name: Sales Analytics Team
+      email: sales-analytics@acme.com
+      team: Sales
+    metadata:
+      tool: looker
+      url: "https://acme.looker.com/dashboards/42"
+      refresh_schedule: daily
+
+  - id: marketing_report
+    description: Weekly marketing performance report
+    depends_on:
+      - mart_ad_performance
+      - mart_account_360
+    tags:
+      - marketing
+      - weekly
+    owner:
+      name: Marketing Ops
+      email: marketing-ops@acme.com
+      team: Marketing
+    metadata:
+      tool: google_sheets
+      refresh_schedule: weekly

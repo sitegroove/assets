@@ -1,5 +1,7 @@
 """Integration tests — end-to-end workflows."""
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
@@ -7,18 +9,24 @@ import pytest
 
 from assets import (
     Asset,
-    AssetField,
     Environment,
     EnvironmentConfig,
-    MemoryBackend,
-    ProjectLoader,
     Registry,
+    SQLiteBackend,
     StateManager,
 )
+from tests.conftest import DataModel
 
 
-class DataModel(Asset):
-    row_count: int = AssetField(default=0, fingerprint=False)
+def _load_json_assets(
+    registry: Registry,
+    models_dir: Path,
+    asset_class: type[Asset] = DataModel,
+) -> None:
+    """Load JSON asset files into the registry."""
+    for path in sorted(models_dir.rglob("*.json")):
+        data = json.loads(path.read_text())
+        registry.register(asset_class.model_validate(data))
 
 
 @pytest.fixture
@@ -27,61 +35,71 @@ def full_project(tmp_path: Path) -> Path:
     models.mkdir()
 
     (models / "raw_users.json").write_text(
-        json.dumps({
-            "name": "raw.users",
-            "kind": "source",
-            "tags": ["raw"],
-            "children": [
-                {"name": "user_id", "kind": "column"},
-                {"name": "email", "kind": "column"},
-            ],
-        })
+        json.dumps(
+            {
+                "id": "raw.users",
+                "type": "source",
+                "tags": ["raw"],
+                "children": [
+                    {"id": "user_id", "type": "column"},
+                    {"id": "email", "type": "column"},
+                ],
+            }
+        )
     )
 
     (models / "raw_payments.json").write_text(
-        json.dumps({
-            "name": "raw.payments",
-            "kind": "source",
-            "tags": ["raw"],
-            "children": [
-                {"name": "payment_id", "kind": "column"},
-                {"name": "user_id", "kind": "column"},
-                {"name": "amount", "kind": "column"},
-            ],
-        })
+        json.dumps(
+            {
+                "id": "raw.payments",
+                "type": "source",
+                "tags": ["raw"],
+                "children": [
+                    {"id": "payment_id", "type": "column"},
+                    {"id": "user_id", "type": "column"},
+                    {"id": "amount", "type": "column"},
+                ],
+            }
+        )
     )
 
     (models / "staging_users.json").write_text(
-        json.dumps({
-            "name": "staging.users",
-            "kind": "data_model",
-            "tags": ["staging", "pii"],
-            "sql": (
-                "SELECT u.user_id, LOWER(TRIM(u.email)) AS email_clean"
-                " FROM {{ ref('raw.users') }} u"
-            ),
-            "children": [
-                {"name": "user_id", "kind": "column"},
-                {"name": "email_clean", "kind": "column"},
-            ],
-        })
+        json.dumps(
+            {
+                "id": "staging.users",
+                "type": "data_model",
+                "tags": ["staging", "pii"],
+                "sql": (
+                    "SELECT u.user_id, LOWER(TRIM(u.email)) AS email_clean"
+                    " FROM raw.users u"
+                ),
+                "depends_on": ["raw.users"],
+                "children": [
+                    {"id": "user_id", "type": "column"},
+                    {"id": "email_clean", "type": "column"},
+                ],
+            }
+        )
     )
 
     (models / "mart_enriched.json").write_text(
-        json.dumps({
-            "name": "mart.enriched",
-            "kind": "data_model",
-            "tags": ["mart"],
-            "sql": (
-                "SELECT u.*, p.amount FROM {{ ref('staging.users') }} u"
-                " JOIN {{ ref('raw.payments') }} p ON u.user_id = p.user_id"
-            ),
-            "children": [
-                {"name": "user_id", "kind": "column"},
-                {"name": "email_clean", "kind": "column"},
-                {"name": "amount", "kind": "column"},
-            ],
-        })
+        json.dumps(
+            {
+                "id": "mart.enriched",
+                "type": "data_model",
+                "tags": ["mart"],
+                "sql": (
+                    "SELECT u.*, p.amount FROM staging.users u"
+                    " JOIN raw.payments p ON u.user_id = p.user_id"
+                ),
+                "depends_on": ["staging.users", "raw.payments"],
+                "children": [
+                    {"id": "user_id", "type": "column"},
+                    {"id": "email_clean", "type": "column"},
+                    {"id": "amount", "type": "column"},
+                ],
+            }
+        )
     )
 
     return tmp_path
@@ -90,22 +108,18 @@ def full_project(tmp_path: Path) -> Path:
 class TestFullWorkflow:
     def test_load_plan_apply_cycle(self, full_project: Path):
         registry = Registry()
-        loader = ProjectLoader(
-            registry,
-            asset_class=DataModel,
-            cache_dir=str(full_project / ".cache"),
-        )
-        backend = MemoryBackend()
+        backend = SQLiteBackend.memory()
         config = EnvironmentConfig(
             default="production",
             environments={
                 "production": Environment(name="production"),
             },
         )
-        mgr = StateManager(registry, loader, backend, config)
+        mgr = StateManager(registry, backend, config)
 
-        # Plan
-        plan = mgr.plan(str(full_project / "models"), environment="production")
+        # Load and plan
+        _load_json_assets(registry, full_project / "models")
+        plan = mgr.plan(environment="production")
         assert plan.has_changes
         assert len(plan.changeset.asset_changes) == 4
 
@@ -114,17 +128,14 @@ class TestFullWorkflow:
         assert result.created == 4
 
         # No changes after apply
-        plan2 = mgr.plan(str(full_project / "models"), environment="production")
+        registry.clear()
+        _load_json_assets(registry, full_project / "models")
+        plan2 = mgr.plan(environment="production")
         assert not plan2.has_changes
 
     def test_graph_queries(self, full_project: Path):
         registry = Registry()
-        loader = ProjectLoader(
-            registry,
-            asset_class=DataModel,
-            cache_dir=str(full_project / ".cache"),
-        )
-        loader.load(str(full_project / "models"))
+        _load_json_assets(registry, full_project / "models")
 
         # Graph traversal
         g = registry.graph
@@ -144,19 +155,14 @@ class TestFullWorkflow:
 
     def test_selector_queries(self, full_project: Path):
         registry = Registry()
-        loader = ProjectLoader(
-            registry,
-            asset_class=DataModel,
-            cache_dir=str(full_project / ".cache"),
-        )
-        loader.load(str(full_project / "models"))
+        _load_json_assets(registry, full_project / "models")
 
         # Tag selector
         pii = registry.select("tag:pii")
         assert pii.names == {"staging.users"}
 
         # Kind selector
-        sources = registry.select("kind:source")
+        sources = registry.select("type:source")
         assert sources.names == {"raw.users", "raw.payments"}
 
         # Wildcard
@@ -170,12 +176,7 @@ class TestFullWorkflow:
 
     def test_children_introspection(self, full_project: Path):
         registry = Registry()
-        loader = ProjectLoader(
-            registry,
-            asset_class=DataModel,
-            cache_dir=str(full_project / ".cache"),
-        )
-        loader.load(str(full_project / "models"))
+        _load_json_assets(registry, full_project / "models")
 
         asset = registry.get("staging.users")
         assert asset is not None
@@ -188,24 +189,14 @@ class TestFullWorkflow:
         # get_child
         col = asset.get_child("email_clean")
         assert col is not None
-        assert col.kind == "column"
+        assert col.type == "column"
 
     def test_fingerprint_stability(self, full_project: Path):
         registry1 = Registry()
-        loader1 = ProjectLoader(
-            registry1,
-            asset_class=DataModel,
-            cache_dir=str(full_project / ".cache1"),
-        )
-        loader1.load(str(full_project / "models"))
+        _load_json_assets(registry1, full_project / "models")
 
         registry2 = Registry()
-        loader2 = ProjectLoader(
-            registry2,
-            asset_class=DataModel,
-            cache_dir=str(full_project / ".cache2"),
-        )
-        loader2.load(str(full_project / "models"))
+        _load_json_assets(registry2, full_project / "models")
 
         for name in ["raw.users", "staging.users", "mart.enriched"]:
             a1 = registry1.get(name)
@@ -215,12 +206,7 @@ class TestFullWorkflow:
 
     def test_multi_env_workflow(self, full_project: Path):
         registry = Registry()
-        loader = ProjectLoader(
-            registry,
-            asset_class=DataModel,
-            cache_dir=str(full_project / ".cache"),
-        )
-        backend = MemoryBackend()
+        backend = SQLiteBackend.memory()
         config = EnvironmentConfig(
             default="development",
             environments={
@@ -231,14 +217,17 @@ class TestFullWorkflow:
                 ),
             },
         )
-        mgr = StateManager(registry, loader, backend, config)
+        mgr = StateManager(registry, backend, config)
 
         # Apply to production
-        plan = mgr.plan(str(full_project / "models"), environment="production")
+        _load_json_assets(registry, full_project / "models")
+        plan = mgr.plan(environment="production")
         mgr.apply(plan, environment="production")
 
         # Dev should inherit (no changes)
-        dev_plan = mgr.plan(str(full_project / "models"), environment="development")
+        registry.clear()
+        _load_json_assets(registry, full_project / "models")
+        dev_plan = mgr.plan(environment="development")
         assert not dev_plan.has_changes
 
         # Promote production → staging
@@ -253,20 +242,16 @@ class TestFullWorkflow:
     def test_row_count_not_fingerprinted(self, full_project: Path):
         """row_count changes should NOT trigger a plan change."""
         registry = Registry()
-        loader = ProjectLoader(
-            registry,
-            asset_class=DataModel,
-            cache_dir=str(full_project / ".cache"),
-        )
-        backend = MemoryBackend()
+        backend = SQLiteBackend.memory()
         config = EnvironmentConfig(
             default="production",
             environments={"production": Environment(name="production")},
         )
-        mgr = StateManager(registry, loader, backend, config)
+        mgr = StateManager(registry, backend, config)
 
         # Apply
-        plan = mgr.plan(str(full_project / "models"), environment="production")
+        _load_json_assets(registry, full_project / "models")
+        plan = mgr.plan(environment="production")
         mgr.apply(plan, environment="production")
 
         # Modify row_count in file — should NOT cause changes since
@@ -277,7 +262,9 @@ class TestFullWorkflow:
         data["row_count"] = 999
         p.write_text(json.dumps(data))
 
-        plan2 = mgr.plan(str(full_project / "models"), environment="production")
+        registry.clear()
+        _load_json_assets(registry, full_project / "models")
+        plan2 = mgr.plan(environment="production")
         # The plan may detect a file change but the fingerprint should match,
         # so no actual asset changes.
         assert not plan2.has_changes

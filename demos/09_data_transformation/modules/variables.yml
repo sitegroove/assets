@@ -1,0 +1,2 @@
+default_currency: USD
+cost_micros_divisor: 1000000

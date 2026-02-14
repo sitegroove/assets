@@ -14,11 +14,11 @@ class TestSelectors:
         assert result.names == {"raw.users", "raw.payments"}
 
     def test_kind_selector(self, populated_registry: Registry):
-        result = populated_registry.select("kind:source")
+        result = populated_registry.select("type:source")
         assert result.names == {"raw.users", "raw.payments"}
 
     def test_kind_data_model(self, populated_registry: Registry):
-        result = populated_registry.select("kind:data_model")
+        result = populated_registry.select("type:data_model")
         assert "staging.users" in result.names
         assert "mart.enriched" in result.names
 
@@ -52,7 +52,7 @@ class TestSelectors:
         assert "mart.enriched" not in result.names
 
     def test_intersection(self, populated_registry: Registry):
-        result = populated_registry.select("tag:staging,kind:data_model")
+        result = populated_registry.select("tag:staging,type:data_model")
         assert "staging.users" in result.names
         assert "staging.payments" in result.names
         # mart.enriched is kind:data_model but not tag:staging
@@ -71,10 +71,12 @@ class TestSelectors:
         result = populated_registry.select("")
         assert result.names == set()
         assert result.assets == []
+        assert "empty" in result.warnings[0].lower()
 
     def test_whitespace_returns_empty(self, populated_registry: Registry):
         result = populated_registry.select("   ")
         assert result.names == set()
+        assert "empty" in result.warnings[0].lower()
 
     def test_nonexistent_asset_in_graph_traversal(self, populated_registry: Registry):
         result = populated_registry.select("+nonexistent+")
@@ -88,17 +90,21 @@ class TestSelectors:
         # "raw.users+abc" — regex absorbs "+abc" into the name, no crash
         result = populated_registry.select("raw.users+abc")
         assert result.names == set()
+        assert any("unexpected '+'" in warning for warning in result.warnings)
 
     def test_upstream_depth_limited(self, populated_registry: Registry):
         result = populated_registry.select("+1mart.enriched")
-        # Leading "+1" is upstream, but regex captures "+" as upstream, "1mart.enriched" as name
+        # Leading "+1" is upstream, but regex captures "+" as upstream,
+        # "1mart.enriched" as name.
         # No asset named "1mart.enriched" exists, so empty
         assert result.names == set()
+        assert any("+<digit>" in warning for warning in result.warnings)
 
     def test_kind_empty_string(self, populated_registry: Registry):
-        # Assets with kind="" should match kind:
-        # but "kind:" with empty value is actually "kind:" which is selector for kind == ""
-        result = populated_registry.select("kind:")
+        # Assets with type="" should match type:
+        # but "type:" with empty value selects type == "".
+        result = populated_registry.select("type:")
         # No assets should have empty kind (all have explicit kinds in fixtures)
         # This verifies the edge case doesn't crash
         assert isinstance(result.names, set)
+        assert any("empty value" in warning for warning in result.warnings)

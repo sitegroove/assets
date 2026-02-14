@@ -1,0 +1,26 @@
+id: stg_ad_performance
+type: staging
+description: Cleaned daily Google Ads performance metrics
+materialized: view
+tags:
+  - google_ads
+  - marketing
+children:
+  - id: date_day
+    type: DATE
+    description: Reporting date
+  - id: campaign_id
+    type: VARCHAR
+    description: FK to stg_campaigns
+  - id: impressions
+    type: INTEGER
+    description: Number of ad impressions
+  - id: clicks
+    type: INTEGER
+    description: Number of ad clicks
+  - id: cost_usd
+    type: DECIMAL
+    description: Cost in USD (converted from micros)
+  - id: conversions
+    type: DECIMAL
+    description: Number of conversions

@@ -7,7 +7,7 @@ import logging
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,22 +16,17 @@ from assets.state.db import connect_state
 from assets.state.models import (
     AssetState,
     DependencyState,
-    SourceFileRef,
     StateSnapshot,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _now_iso() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-
 def _parse_dt(s: str) -> datetime:
     """Parse ISO 8601 datetime string, tolerating several formats."""
     for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"):
         try:
-            return datetime.strptime(s, fmt).replace(tzinfo=UTC)
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
         except ValueError:
             continue
     return datetime.fromisoformat(s)
@@ -40,11 +35,10 @@ def _parse_dt(s: str) -> datetime:
 def _asset_from_row(row: sqlite3.Row) -> AssetState:
     """Reconstruct an AssetState from a database row."""
     return AssetState(
-        name=row["name"],
-        kind=row["kind"],
+        id=row["id"],
+        type=row["type"],
         fingerprint=row["fingerprint"],
         data=json.loads(row["data"]),
-        source_files=[SourceFileRef.model_validate(sf) for sf in json.loads(row["source_files"])],
         applied_at=_parse_dt(row["applied_at"]),
         applied_by=row["applied_by"],
         version=row["version"],
@@ -71,17 +65,43 @@ class SQLiteBackend(StateBackend):
 
     The database contains tables for environments, assets, dependencies,
     and append-only history tables populated via triggers.
+
+    Pass ``":memory:"`` as *db_path* for a fast, transient in-memory
+    database (useful for testing).  The in-memory backend exercises the
+    same SQL schema, triggers, and serialization as the file-based one,
+    giving full test parity.
     """
 
     def __init__(self, db_path: str | Path = ".assets_state/state.db") -> None:
-        self._db_path = Path(db_path)
+        self._in_memory = str(db_path) == ":memory:"
+        self._db_path: Path | None = None if self._in_memory else Path(db_path)
         self._conn: sqlite3.Connection | None = None
         self._locks: set[str] = set()
+
+    @classmethod
+    def memory(cls) -> SQLiteBackend:
+        """Create a transient in-memory backend for testing.
+
+        Equivalent to ``SQLiteBackend(":memory:")``.  The returned
+        backend uses the same SQL schema and triggers as a file-backed
+        instance, giving full test parity.
+        """
+        return cls(":memory:")
+
+    @property
+    def local_path(self) -> Path | None:
+        """Directory containing the state database.
+
+        Returns ``None`` for in-memory backends.
+        """
+        return self._db_path.parent if self._db_path is not None else None
 
     @property
     def conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = connect_state(self._db_path)
+            self._conn = connect_state(
+                ":memory:" if self._in_memory else self._db_path  # type: ignore[arg-type]
+            )
         return self._conn
 
     def close(self) -> None:
@@ -101,7 +121,7 @@ class SQLiteBackend(StateBackend):
         asset_rows = self.conn.execute(
             "SELECT * FROM assets WHERE environment = ?", (environment,)
         ).fetchall()
-        assets = {r["name"]: _asset_from_row(r) for r in asset_rows}
+        assets = {r["id"]: _asset_from_row(r) for r in asset_rows}
 
         # Load dependencies
         dep_rows = self.conn.execute(
@@ -119,12 +139,26 @@ class SQLiteBackend(StateBackend):
             metadata=json.loads(row["metadata"]),
         )
 
-    def save(self, environment: str, state: StateSnapshot) -> None:
-        """Save state for an environment. Upserts everything in a transaction."""
+    def save(
+        self,
+        environment: str,
+        state: StateSnapshot,
+        *,
+        changed_ids: set[str] | None = None,
+    ) -> None:
+        """Save state for an environment.
+
+        When *changed_ids* is ``None`` (default), every asset and
+        dependency is upserted (full save).  When a set of asset IDs
+        is provided, only those assets and their dependencies are
+        written — drastically reducing SQLite I/O and avoiding
+        spurious history-trigger rows for unchanged assets.
+        """
         with self.conn:
             # Upsert environment
             self.conn.execute(
-                """INSERT INTO environments (name, version, created_at, updated_at, metadata)
+                """INSERT INTO environments
+                       (name, version, created_at, updated_at, metadata)
                    VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(name) DO UPDATE SET
                        version = excluded.version,
@@ -140,34 +174,51 @@ class SQLiteBackend(StateBackend):
             )
 
             # Sync assets: delete removed, upsert current
-            existing_names = {
-                r[0]
-                for r in self.conn.execute(
-                    "SELECT name FROM assets WHERE environment = ?", (environment,)
-                ).fetchall()
-            }
-            desired_names = set(state.assets.keys())
-            removed_names = existing_names - desired_names
+            if changed_ids is not None:
+                # Incremental: only delete assets in changed_ids that
+                # are no longer in the desired snapshot.
+                removed_ids = changed_ids - set(state.assets.keys())
+            else:
+                # Full save: compare all existing vs desired.
+                existing_ids = {
+                    r[0]
+                    for r in self.conn.execute(
+                        "SELECT id FROM assets WHERE environment = ?",
+                        (environment,),
+                    ).fetchall()
+                }
+                desired_ids = set(state.assets.keys())
+                removed_ids = existing_ids - desired_ids
 
-            if removed_names:
-                placeholders = ",".join("?" for _ in removed_names)
+            if removed_ids:
+                placeholders = ",".join("?" for _ in removed_ids)
                 self.conn.execute(
-                    f"DELETE FROM assets WHERE environment = ? AND name IN ({placeholders})",
-                    (environment, *removed_names),
+                    (
+                        "DELETE FROM assets "
+                        f"WHERE environment = ? AND id IN ({placeholders})"
+                    ),
+                    (environment, *removed_ids),
                 )
+
+            # Determine which assets to upsert
+            if changed_ids is not None:
+                assets_to_write = (
+                    state.assets[aid] for aid in changed_ids if aid in state.assets
+                )
+            else:
+                assets_to_write = state.assets.values()
 
             # Batch upsert assets via executemany with generator
             # (generator avoids materializing all serialized rows in memory)
             self.conn.executemany(
                 """INSERT INTO assets
-                   (environment, name, kind, fingerprint, data, source_files,
+                   (environment, id, type, fingerprint, data,
                     applied_at, applied_by, version, deleted)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(environment, name) DO UPDATE SET
-                       kind = excluded.kind,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(environment, id) DO UPDATE SET
+                       type = excluded.type,
                        fingerprint = excluded.fingerprint,
                        data = excluded.data,
-                       source_files = excluded.source_files,
                        applied_at = excluded.applied_at,
                        applied_by = excluded.applied_by,
                        version = excluded.version,
@@ -175,44 +226,72 @@ class SQLiteBackend(StateBackend):
                 (
                     (
                         environment,
-                        a.name,
-                        a.kind,
+                        a.id,
+                        a.type,
                         a.fingerprint,
                         json.dumps(a.data),
-                        json.dumps([sf.model_dump() for sf in a.source_files]),
                         a.applied_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                         a.applied_by,
                         a.version,
                         int(a.deleted),
                     )
-                    for a in state.assets.values()
+                    for a in assets_to_write
                 ),
             )
 
-            # Batch insert dependencies via executemany with generator
-            self.conn.execute(
-                "DELETE FROM dependencies WHERE environment = ?", (environment,)
-            )
-            self.conn.executemany(
-                """INSERT INTO dependencies
-                   (environment, source, target, type, fingerprint, data)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    (
-                        environment,
-                        dep.source,
-                        dep.target,
-                        dep.type,
-                        dep.fingerprint,
-                        json.dumps(dep.data),
+            # Incremental dependency persistence
+            if changed_ids is not None:
+                # Only rewrite deps touching changed assets
+                dep_ids = changed_ids | removed_ids
+                for aid in dep_ids:
+                    self.conn.execute(
+                        "DELETE FROM dependencies "
+                        "WHERE environment = ? AND (source = ? OR target = ?)",
+                        (environment, aid, aid),
                     )
-                    for dep in state.dependencies
-                ),
-            )
+                self.conn.executemany(
+                    """INSERT OR REPLACE INTO dependencies
+                       (environment, source, target, type, fingerprint, data)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        (
+                            environment,
+                            dep.source,
+                            dep.target,
+                            dep.type,
+                            dep.fingerprint,
+                            json.dumps(dep.data),
+                        )
+                        for dep in state.dependencies
+                        if dep.source in dep_ids or dep.target in dep_ids
+                    ),
+                )
+            else:
+                # Full dependency replace (original behaviour)
+                self.conn.execute(
+                    "DELETE FROM dependencies WHERE environment = ?",
+                    (environment,),
+                )
+                self.conn.executemany(
+                    """INSERT INTO dependencies
+                       (environment, source, target, type, fingerprint, data)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        (
+                            environment,
+                            dep.source,
+                            dep.target,
+                            dep.type,
+                            dep.fingerprint,
+                            json.dumps(dep.data),
+                        )
+                        for dep in state.dependencies
+                    ),
+                )
 
     @contextmanager
     def lock(self, environment: str) -> Generator[None, None, None]:
-        """In-process lock (same as MemoryBackend for single-process use)."""
+        """In-process lock for single-process use."""
         if environment in self._locks:
             raise RuntimeError(f"Environment '{environment}' is already locked")
         self._locks.add(environment)
@@ -222,7 +301,9 @@ class SQLiteBackend(StateBackend):
             self._locks.discard(environment)
 
     def list_environments(self) -> list[str]:
-        rows = self.conn.execute("SELECT name FROM environments ORDER BY name").fetchall()
+        rows = self.conn.execute(
+            "SELECT name FROM environments ORDER BY name"
+        ).fetchall()
         return [r["name"] for r in rows]
 
     def delete_environment(self, environment: str) -> None:
@@ -240,28 +321,26 @@ class SQLiteBackend(StateBackend):
             self.conn.execute(
                 "DELETE FROM dependencies_history WHERE environment = ?", (environment,)
             )
-            self.conn.execute(
-                "DELETE FROM environments WHERE name = ?", (environment,)
-            )
+            self.conn.execute("DELETE FROM environments WHERE name = ?", (environment,))
 
     # ─── History queries ────────────────────────────────────
 
     def asset_history(
         self,
         environment: str,
-        name: str,
+        asset_id: str,
         *,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Return version history for a specific asset."""
         rows = self.conn.execute(
-            """SELECT id, environment, name, action, kind, fingerprint, data,
-                      source_files, applied_at, applied_by, version, recorded_at
+            """SELECT id, environment, asset_id, action, type, fingerprint, data,
+                      applied_at, applied_by, version, recorded_at
                FROM assets_history
-               WHERE environment = ? AND name = ?
+               WHERE environment = ? AND asset_id = ?
                ORDER BY version DESC
                LIMIT ?""",
-            (environment, name, limit),
+            (environment, asset_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -275,7 +354,8 @@ class SQLiteBackend(StateBackend):
         """Return recent changes across all assets in an environment."""
         if since:
             rows = self.conn.execute(
-                """SELECT id, name, action, applied_by, applied_at, version, recorded_at
+                """SELECT id, asset_id, action, applied_by, applied_at,
+                          version, recorded_at
                    FROM assets_history
                    WHERE environment = ? AND recorded_at > ?
                    ORDER BY recorded_at DESC
@@ -284,7 +364,8 @@ class SQLiteBackend(StateBackend):
             ).fetchall()
         else:
             rows = self.conn.execute(
-                """SELECT id, name, action, applied_by, applied_at, version, recorded_at
+                """SELECT id, asset_id, action, applied_by, applied_at,
+                          version, recorded_at
                    FROM assets_history
                    WHERE environment = ?
                    ORDER BY recorded_at DESC
@@ -294,13 +375,13 @@ class SQLiteBackend(StateBackend):
         return [dict(r) for r in rows]
 
     def asset_version(
-        self, environment: str, name: str, version: int
+        self, environment: str, asset_id: str, version: int
     ) -> dict[str, Any] | None:
         """Retrieve a specific historical version of an asset."""
         row = self.conn.execute(
             """SELECT * FROM assets_history
-               WHERE environment = ? AND name = ? AND version = ?""",
-            (environment, name, version),
+               WHERE environment = ? AND asset_id = ? AND version = ?""",
+            (environment, asset_id, version),
         ).fetchone()
         return dict(row) if row else None
 

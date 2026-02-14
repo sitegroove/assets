@@ -1,0 +1,96 @@
+source: fivetran_salesforce
+description: Salesforce CRM data synced via Fivetran
+owner:
+  name: Data Engineering
+  email: data-eng@acme.com
+  team: Platform
+
+tables:
+  - name: accounts
+    id: raw_accounts
+    description: Salesforce accounts (companies / organisations)
+    tags:
+      - salesforce
+      - crm
+    columns:
+      - id: account_id
+        type: VARCHAR
+        description: Primary key
+      - id: account_name
+        type: VARCHAR
+        description: Company name
+      - id: industry
+        type: VARCHAR
+        description: Industry vertical
+      - id: annual_revenue
+        type: DECIMAL
+        description: Self-reported annual revenue
+      - id: created_date
+        type: TIMESTAMP
+        description: Account creation timestamp
+      - id: is_active
+        type: BOOLEAN
+        description: Whether the account is currently active
+
+  - name: contacts
+    id: raw_contacts
+    description: Salesforce contacts (people at accounts)
+    tags:
+      - salesforce
+      - crm
+      - pii
+    columns:
+      - id: contact_id
+        type: VARCHAR
+        description: Primary key
+      - id: account_id
+        type: VARCHAR
+        description: FK to accounts
+      - id: first_name
+        type: VARCHAR
+        description: Contact first name
+        pii: true
+        classification: confidential
+      - id: last_name
+        type: VARCHAR
+        description: Contact last name
+        pii: true
+        classification: confidential
+      - id: email
+        type: VARCHAR
+        description: Contact email address
+        pii: true
+        classification: restricted
+      - id: title
+        type: VARCHAR
+        description: Job title
+
+  - name: opportunities
+    id: raw_opportunities
+    description: Salesforce opportunities (deals in pipeline)
+    tags:
+      - salesforce
+      - crm
+      - finance
+    columns:
+      - id: opportunity_id
+        type: VARCHAR
+        description: Primary key
+      - id: account_id
+        type: VARCHAR
+        description: FK to accounts
+      - id: opportunity_name
+        type: VARCHAR
+        description: Deal name
+      - id: amount
+        type: DECIMAL
+        description: Deal value in original currency
+      - id: stage
+        type: VARCHAR
+        description: Pipeline stage (e.g. Prospecting, Closed Won)
+      - id: close_date
+        type: DATE
+        description: Expected or actual close date
+      - id: created_date
+        type: TIMESTAMP
+        description: Opportunity creation timestamp

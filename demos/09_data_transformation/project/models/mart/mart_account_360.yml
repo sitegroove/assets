@@ -1,0 +1,45 @@
+id: mart_account_360
+type: mart
+description: 360-degree account view joining CRM data with ad spend (cross-module)
+materialized: table
+tags:
+  - salesforce
+  - google_ads
+  - executive
+children:
+  - id: account_id
+    type: VARCHAR
+    description: Primary key
+  - id: account_name
+    type: VARCHAR
+    description: Company name
+  - id: industry
+    type: VARCHAR
+    description: Industry vertical
+  - id: annual_revenue
+    type: DECIMAL
+    description: Self-reported annual revenue
+  - id: contact_count
+    type: INTEGER
+    description: Number of contacts
+  - id: total_pipeline
+    type: DECIMAL
+    description: Total pipeline value
+  - id: won_amount
+    type: DECIMAL
+    description: Total won revenue
+  - id: total_ad_spend
+    type: DECIMAL
+    description: Total Google Ads spend (cross-module ref)
+  - id: total_ad_conversions
+    type: DECIMAL
+    description: Total Google Ads conversions (cross-module ref)
+metrics:
+  - name: revenue_per_contact
+    expression: "SUM(won_amount) / NULLIF(SUM(contact_count), 0)"
+    description: Average revenue per contact
+    time_grain: month
+  - name: ad_roi
+    expression: "SUM(won_amount) / NULLIF(SUM(total_ad_spend), 0)"
+    description: Return on ad spend
+    time_grain: month

@@ -1,0 +1,33 @@
+id: stg_accounts
+type: staging
+description: Cleaned Salesforce accounts with standardised column names
+materialized: view
+tags:
+  - salesforce
+  - crm
+children:
+  - id: account_id
+    type: VARCHAR
+    description: Primary key
+  - id: account_name
+    type: VARCHAR
+    description: Trimmed company name
+  - id: industry
+    type: VARCHAR
+    description: Lowercased industry vertical
+  - id: annual_revenue
+    type: DECIMAL
+    description: Self-reported annual revenue (coalesced to 0)
+  - id: is_active
+    type: BOOLEAN
+    description: Whether the account is currently active
+  - id: created_at
+    type: TIMESTAMP
+    description: Account creation timestamp
+tests:
+  - name: stg_accounts_pk
+    type: not_null
+    column: account_id
+  - name: stg_accounts_unique
+    type: unique
+    column: account_id

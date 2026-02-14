@@ -1,43 +1,26 @@
 """Tests for state models."""
 
-
-from assets import AssetState, DependencyState, SourceFileRef, StateSnapshot
-
-
-class TestSourceFileRef:
-    def test_basic(self):
-        ref = SourceFileRef(path="staging/users.yaml", content_hash="abc123")
-        assert ref.path == "staging/users.yaml"
-        assert ref.sql_path is None
-
-    def test_with_sql(self):
-        ref = SourceFileRef(
-            path="staging/users.yaml",
-            content_hash="abc",
-            sql_path="staging/users.sql",
-            sql_content_hash="def",
-        )
-        assert ref.sql_path == "staging/users.sql"
+from assets import AssetState, DependencyState, StateSnapshot
 
 
 class TestAssetState:
     def test_basic(self):
-        s = AssetState(name="test", fingerprint="abc")
-        assert s.name == "test"
+        s = AssetState(id="test", fingerprint="abc")
+        assert s.id == "test"
         assert s.version == 1
         assert s.deleted is False
 
     def test_with_data(self):
         s = AssetState(
-            name="test",
-            kind="model",
+            id="test",
+            type="model",
             fingerprint="abc",
             data={"name": "test", "kind": "model"},
         )
         assert s.data["kind"] == "model"
 
     def test_deleted_tombstone(self):
-        s = AssetState(name="test", fingerprint="abc", deleted=True)
+        s = AssetState(id="test", fingerprint="abc", deleted=True)
         assert s.deleted is True
 
 
@@ -59,7 +42,7 @@ class TestStateSnapshot:
         s = StateSnapshot(
             environment="production",
             assets={
-                "test": AssetState(name="test", fingerprint="abc"),
+                "test": AssetState(id="test", fingerprint="abc"),
             },
         )
         assert "test" in s.assets
@@ -69,7 +52,7 @@ class TestStateSnapshot:
         s = StateSnapshot(
             environment="dev",
             assets={
-                "a": AssetState(name="a", fingerprint="fp1", data={"name": "a"}),
+                "a": AssetState(id="a", fingerprint="fp1", data={"name": "a"}),
             },
         )
         json_str = s.model_dump_json()

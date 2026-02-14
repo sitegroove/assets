@@ -9,10 +9,10 @@ class TestDiffer:
         self.differ = Differ()
 
     def test_no_changes(self):
-        asset = Asset(name="test", kind="model")
+        asset = Asset(id="test", type="model")
         current = {
             "test": AssetState(
-                name="test",
+                id="test",
                 fingerprint=asset.fingerprint,
                 data=asset.model_dump(),
             )
@@ -21,58 +21,56 @@ class TestDiffer:
         assert len(cs.asset_changes) == 0
 
     def test_create(self):
-        asset = Asset(name="new", kind="model")
+        asset = Asset(id="new", type="model")
         cs = self.differ.diff([asset], {})
         assert len(cs.asset_changes) == 1
         change = cs.asset_changes[0]
         assert change.action == "create"
-        assert change.asset_name == "new"
+        assert change.asset_id == "new"
         assert change.after is not None
 
     def test_delete(self):
         current = {
             "old": AssetState(
-                name="old",
+                id="old",
                 fingerprint="abc",
-                data={"name": "old"},
+                data={"id": "old"},
             )
         }
         cs = self.differ.diff([], current)
         assert len(cs.asset_changes) == 1
         change = cs.asset_changes[0]
         assert change.action == "delete"
-        assert change.asset_name == "old"
+        assert change.asset_id == "old"
 
     def test_update(self):
-        asset = Asset(name="test", kind="model_v2")
+        asset = Asset(id="test", type="model_v2")
         current = {
             "test": AssetState(
-                name="test",
+                id="test",
                 fingerprint="old_fingerprint",
-                data={"name": "test", "kind": "model_v1"},
+                data={"id": "test", "type": "model_v1"},
             )
         }
         cs = self.differ.diff([asset], current)
         assert len(cs.asset_changes) == 1
         change = cs.asset_changes[0]
         assert change.action == "update"
-        assert any(fc.field == "kind" for fc in change.field_changes)
+        assert any(fc.field == "type" for fc in change.field_changes)
 
     def test_skip_deleted_tombstones(self):
-        asset = Asset(name="test")
-        current = {
-            "test": AssetState(name="test", fingerprint="x", deleted=True)
-        }
+        asset = Asset(id="test")
+        current = {"test": AssetState(id="test", fingerprint="x", deleted=True)}
         cs = self.differ.diff([asset], current)
         assert cs.asset_changes[0].action == "create"
 
     def test_field_changes_detail(self):
-        asset = Asset(name="test", description="new desc", tags=["a", "b"])
+        asset = Asset(id="test", description="new desc", tags=["a", "b"])
         current = {
             "test": AssetState(
-                name="test",
+                id="test",
                 fingerprint="old",
-                data={"name": "test", "description": "old desc", "tags": ["a"]},
+                data={"id": "test", "description": "old desc", "tags": ["a"]},
             )
         }
         cs = self.differ.diff([asset], current)
@@ -83,24 +81,26 @@ class TestDiffer:
 
     def test_mixed_operations(self):
         desired = [
-            Asset(name="keep", kind="model"),
-            Asset(name="new", kind="source"),
-            Asset(name="changed", kind="v2"),
+            Asset(id="keep", type="model"),
+            Asset(id="new", type="source"),
+            Asset(id="changed", type="v2"),
         ]
-        keep = Asset(name="keep", kind="model")
+        keep = Asset(id="keep", type="model")
         current = {
             "keep": AssetState(
-                name="keep", fingerprint=keep.fingerprint, data=keep.model_dump()
+                id="keep", fingerprint=keep.fingerprint, data=keep.model_dump()
             ),
             "changed": AssetState(
-                name="changed", fingerprint="old", data={"name": "changed", "kind": "v1"}
+                id="changed",
+                fingerprint="old",
+                data={"id": "changed", "type": "v1"},
             ),
             "deleted": AssetState(
-                name="deleted", fingerprint="x", data={"name": "deleted"}
+                id="deleted", fingerprint="x", data={"id": "deleted"}
             ),
         }
         cs = self.differ.diff(desired, current)
-        actions = {c.asset_name: c.action for c in cs.asset_changes}
+        actions = {c.asset_id: c.action for c in cs.asset_changes}
         assert "keep" not in actions  # unchanged
         assert actions["new"] == "create"
         assert actions["changed"] == "update"
@@ -108,19 +108,19 @@ class TestDiffer:
 
     def test_nested_children_change_detected(self):
         asset_v1 = Asset(
-            name="test",
-            children=[Asset(name="col1", kind="column")],
+            id="test",
+            children=[Asset(id="col1", type="column")],
         )
         asset_v2 = Asset(
-            name="test",
+            id="test",
             children=[
-                Asset(name="col1", kind="column"),
-                Asset(name="col2", kind="column"),
+                Asset(id="col1", type="column"),
+                Asset(id="col2", type="column"),
             ],
         )
         current = {
             "test": AssetState(
-                name="test",
+                id="test",
                 fingerprint=asset_v1.fingerprint,
                 data=asset_v1.model_dump(),
             )
@@ -132,19 +132,19 @@ class TestDiffer:
         assert "children" in fields_changed
 
     def test_deeply_nested_change_detected(self):
-        child_v1 = Asset(name="sub", kind="v1")
-        child_v2 = Asset(name="sub", kind="v2")
+        child_v1 = Asset(id="sub", type="v1")
+        child_v2 = Asset(id="sub", type="v2")
         asset_v1 = Asset(
-            name="test",
-            children=[Asset(name="parent", children=[child_v1])],
+            id="test",
+            children=[Asset(id="parent", children=[child_v1])],
         )
         asset_v2 = Asset(
-            name="test",
-            children=[Asset(name="parent", children=[child_v2])],
+            id="test",
+            children=[Asset(id="parent", children=[child_v2])],
         )
         current = {
             "test": AssetState(
-                name="test",
+                id="test",
                 fingerprint=asset_v1.fingerprint,
                 data=asset_v1.model_dump(),
             )

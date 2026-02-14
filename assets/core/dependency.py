@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from pydantic import BaseModel, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 PATH_SEPARATOR = "/"
 
@@ -16,11 +16,19 @@ class Dependency(BaseModel):
     source: str
     target: str
     type: str = "ref"
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @computed_field  # type: ignore[prop-decorator]
+    @computed_field
     @property
     def fingerprint(self) -> str:
+        """Deterministic hash of the dependency identity.
+
+        Intentionally excludes ``metadata`` — metadata is treated as
+        non-semantic annotation (labels, descriptions, UI hints) that
+        should not trigger history entries or state changes when
+        modified alone.  Only structural changes (source, target, type)
+        produce a new fingerprint.
+        """
         raw = f"{self.source}:{self.target}:{self.type}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -32,7 +40,8 @@ class FieldMapping(BaseModel):
 
         source="raw.users/email"           → asset "raw.users", child "email"
         target="staging.users/email_clean"  → asset "staging.users", child "email_clean"
-        source="db/public/users/email"      → asset "db", child path "public/users/email"
+        source="db/public/users/email"      → asset "db",
+                                                child path "public/users/email"
     """
 
     source: str

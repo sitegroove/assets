@@ -1,4 +1,4 @@
-"""LineageResolver — abstract base class for column-level lineage resolution.
+"""DependencyResolver — abstract base class for column-level dependency resolution.
 
 The library provides this base class. Consumers implement concrete resolvers
 (e.g., using sqlglot) by subclassing and implementing the `resolve` method.
@@ -11,8 +11,8 @@ from abc import ABC, abstractmethod
 from assets.core.dependency import FieldMapping
 
 
-class LineageResolver(ABC):
-    """Base class for column-level lineage resolvers.
+class DependencyResolver(ABC):
+    """Base class for column-level dependency resolvers.
 
     Consumers subclass this and implement `resolve()` with their own
     SQL parsing logic (e.g., sqlglot, custom parser, etc.).
@@ -20,11 +20,11 @@ class LineageResolver(ABC):
 
     @abstractmethod
     def resolve(self, sql: str, schema: dict[str, list[str]]) -> list[FieldMapping]:
-        """Parse SQL and trace column lineage.
+        """Parse SQL and trace column dependencies.
 
         Args:
-            sql: Clean SQL (refs already resolved to table names).
-            schema: {asset_name: [child_name, ...]} for upstream assets.
+            sql: Clean SQL (consumers resolve any templates before registering).
+            schema: {asset_id: [child_id, ...]} for upstream assets.
 
         Returns:
             List of FieldMapping entries with path-based source/target

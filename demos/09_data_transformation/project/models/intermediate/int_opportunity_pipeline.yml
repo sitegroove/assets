@@ -1,0 +1,29 @@
+id: int_opportunity_pipeline
+type: intermediate
+description: Opportunity pipeline metrics aggregated by account
+materialized: view
+tags:
+  - salesforce
+  - finance
+children:
+  - id: account_id
+    type: VARCHAR
+    description: FK to accounts
+  - id: total_pipeline
+    type: DECIMAL
+    description: Sum of all opportunity amounts
+  - id: won_amount
+    type: DECIMAL
+    description: Sum of won opportunity amounts
+  - id: pipeline_count
+    type: INTEGER
+    description: Total number of opportunities
+  - id: won_count
+    type: INTEGER
+    description: Number of won opportunities
+  - id: avg_deal_size
+    type: DECIMAL
+    description: Average deal value
+  - id: win_rate
+    type: DECIMAL
+    description: Ratio of won deals to total deals

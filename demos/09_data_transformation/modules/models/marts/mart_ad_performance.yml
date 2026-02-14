@@ -1,0 +1,41 @@
+id: mart_ad_performance
+type: mart
+description: Aggregated ad performance by campaign with derived metrics
+materialized: table
+tags:
+  - google_ads
+  - marketing
+children:
+  - id: campaign_id
+    type: VARCHAR
+    description: Primary key
+  - id: campaign_name
+    type: VARCHAR
+    description: Campaign display name
+  - id: total_impressions
+    type: INTEGER
+    description: Lifetime impressions
+  - id: total_clicks
+    type: INTEGER
+    description: Lifetime clicks
+  - id: total_cost
+    type: DECIMAL
+    description: Lifetime ad spend in USD
+  - id: total_conversions
+    type: DECIMAL
+    description: Lifetime conversions
+  - id: ctr
+    type: DECIMAL
+    description: Click-through rate
+  - id: cpc
+    type: DECIMAL
+    description: Cost per click in USD
+metrics:
+  - name: total_ad_spend
+    expression: "SUM(total_cost)"
+    description: Total advertising spend across all campaigns
+    time_grain: month
+  - name: avg_ctr
+    expression: "AVG(ctr)"
+    description: Average click-through rate
+    time_grain: week

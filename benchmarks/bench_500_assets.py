@@ -1,11 +1,11 @@
-"""Benchmark — 500-asset comparison across all backends and compiled caches.
+"""Benchmark — 500-asset comparison across state backends and file index.
 
 Run:
     python benchmarks/bench_500_assets.py
 
 Compares:
-    State backends:   MemoryBackend · LocalJSONBackend · SQLiteBackend
-    Compiled caches:  CompiledCache (file-per-entry) · SQLiteCompiledCache
+    State backends:   SQLiteBackend(:memory:) · SQLiteBackend(file)
+    File index:       FileIndex (SQLite-backed, in state.db)
 """
 
 from __future__ import annotations
@@ -23,12 +23,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from assets import (
-    CompiledCache,
-    LocalJSONBackend,
-    MemoryBackend,
+    FileIndex,
     SQLiteBackend,
-    SQLiteCompiledCache,
 )
+from assets.state.db import connect_state
 from assets.state.models import AssetState, DependencyState, StateSnapshot
 
 # ── Configuration ────────────────────────────────────────────
@@ -74,9 +72,14 @@ def _make_deps(n: int, num_assets: int) -> list[DependencyState]:
     return deps
 
 
-def _build_snapshot(num_assets: int = NUM_ASSETS, fingerprint_salt: str = "") -> StateSnapshot:
-    assets = {f"model_{i:04d}": _make_asset(i, fingerprint_salt=fingerprint_salt)
-              for i in range(num_assets)}
+def _build_snapshot(
+    num_assets: int = NUM_ASSETS,
+    fingerprint_salt: str = "",
+) -> StateSnapshot:
+    assets = {
+        f"model_{i:04d}": _make_asset(i, fingerprint_salt=fingerprint_salt)
+        for i in range(num_assets)
+    }
     deps = _make_deps(NUM_DEPS, num_assets)
     return StateSnapshot(
         environment=ENVIRONMENT,
@@ -87,7 +90,7 @@ def _build_snapshot(num_assets: int = NUM_ASSETS, fingerprint_salt: str = "") ->
 
 
 def _timed(fn, iterations: int = ITERATIONS) -> dict[str, float]:
-    """Run fn() multiple times and return timing stats in milliseconds."""
+    """Run fn() multiple times and return timing stats in ms."""
     times = []
     for _ in range(iterations):
         start = time.perf_counter()
@@ -99,7 +102,7 @@ def _timed(fn, iterations: int = ITERATIONS) -> dict[str, float]:
         "max_ms": max(times),
         "mean_ms": statistics.mean(times),
         "median_ms": statistics.median(times),
-        "stdev_ms": statistics.stdev(times) if len(times) > 1 else 0.0,
+        "stdev_ms": (statistics.stdev(times) if len(times) > 1 else 0.0),
     }
 
 
@@ -142,11 +145,12 @@ def bench_state_backend(name: str, make_backend, tmp_dir: Path) -> dict:
     # --- Load (verify count) ---
     loaded = backend.load(ENVIRONMENT)
     assert loaded is not None
-    assert len(loaded.assets) == NUM_ASSETS, f"Expected {NUM_ASSETS}, got {len(loaded.assets)}"
+    assert len(loaded.assets) == NUM_ASSETS, (
+        f"Expected {NUM_ASSETS}, got {len(loaded.assets)}"
+    )
     assert len(loaded.dependencies) == NUM_DEPS
 
     # --- List environments ---
-    # Save a few more environments so list has work to do
     for env in ["staging", "dev", "pr_123", "pr_456"]:
         backend.save(env, StateSnapshot(environment=env))
     stats = _timed(lambda: backend.list_environments())
@@ -171,99 +175,65 @@ def bench_state_backend(name: str, make_backend, tmp_dir: Path) -> dict:
 
 
 def _make_memory(tmp_dir):
-    return MemoryBackend()
-
-
-def _make_local_json(tmp_dir):
-    return LocalJSONBackend(state_dir=str(tmp_dir / "local_json"))
+    return SQLiteBackend.memory()
 
 
 def _make_sqlite(tmp_dir):
     return SQLiteBackend(db_path=tmp_dir / "state.db")
 
 
-# ── Compiled Cache Benchmarks ───────────────────────────────
-def bench_compiled_cache(name: str, make_cache, tmp_dir: Path, src_dir: Path) -> dict:
+# ── FileIndex Benchmarks ────────────────────────────────────
+def bench_file_index(name: str, tmp_dir: Path, src_dir: Path) -> dict:
     print(f"\n{'─' * 60}")
-    print(f"  Compiled Cache: {name}")
+    print(f"  File Index: {name}")
     print(f"{'─' * 60}")
 
     results = {}
-    cache = make_cache(tmp_dir)
+    conn = connect_state(tmp_dir / "state.db")
+    index = FileIndex(conn, tmp_dir)
     source_files = sorted(src_dir.glob("*.json"))
 
-    # --- Put (cold write) ---
+    # --- put_file (cold write) ---
     def _put_all():
         for src in source_files:
             data = json.loads(src.read_text())
-            cache.put(src, src_dir, data)
+            index.put_file(
+                src,
+                src_dir,
+                asset_id=data["name"],
+                fingerprint=hashlib.sha256(json.dumps(data).encode()).hexdigest(),
+            )
 
     stats = _timed(_put_all, iterations=3)
     results["put_cold"] = stats
-    print(f"  Put ({NUM_ASSETS} files, cold):            {_fmt(stats)}")
+    print(f"  put_file ({NUM_ASSETS} files, cold):       {_fmt(stats)}")
 
-    # --- Put batch (only for SQLiteCompiledCache) ---
-    if hasattr(cache, "put_many"):
-        # Fresh cache for fair comparison
-        cache_batch = make_cache(tmp_dir / "batch")
+    # --- diff (all fresh — mtime fast-path) ---
+    discovered = [(src, src.stat().st_mtime_ns) for src in source_files]
 
-        def _put_batch():
-            entries = [
-                (src, src_dir, json.loads(src.read_text())) for src in source_files
-            ]
-            cache_batch.put_many(entries)
+    def _diff_all_fresh():
+        status = index.diff(discovered, src_dir)
+        assert len(status.fresh) == NUM_ASSETS, (
+            f"Expected {NUM_ASSETS} fresh, got {len(status.fresh)}"
+        )
 
-        stats = _timed(_put_batch, iterations=3)
-        results["put_batch"] = stats
-        print(f"  Put batch ({NUM_ASSETS} files):             {_fmt(stats)}")
-        if hasattr(cache_batch, "close"):
-            cache_batch.close()
+    stats = _timed(_diff_all_fresh)
+    results["diff_all_fresh"] = stats
+    print(f"  diff ({NUM_ASSETS} files, all fresh):      {_fmt(stats)}")
 
-    # --- Get (mtime fast-path hit) ---
-    def _get_all_hit():
-        hits = 0
-        for src in source_files:
-            if cache.get(src, src_dir) is not None:
-                hits += 1
-        assert hits == NUM_ASSETS, f"Expected {NUM_ASSETS} hits, got {hits}"
-
-    stats = _timed(_get_all_hit)
-    results["get_hit"] = stats
-    print(f"  Get ({NUM_ASSETS} files, cache hit):       {_fmt(stats)}")
-
-    # --- Get (all miss — source deleted) ---
-    missing_file = src_dir / "nonexistent.json"
-
-    def _get_miss():
-        cache.get(missing_file, src_dir)
-
-    stats = _timed(_get_miss, iterations=ITERATIONS)
-    results["get_miss"] = stats
-    print(f"  Get (single miss):                  {_fmt(stats)}")
-
-    # --- Clean (no orphans) ---
-    stats = _timed(lambda: cache.clean(src_dir))
+    # --- clean (no orphans) ---
+    stats = _timed(lambda: index.clean(src_dir))
     results["clean_no_orphans"] = stats
-    print(f"  Clean (no orphans):                 {_fmt(stats)}")
+    print(f"  clean (no orphans):                 {_fmt(stats)}")
 
-    if hasattr(cache, "close"):
-        cache.close()
-
+    index.close()
     return results
-
-
-def _make_file_cache(tmp_dir):
-    return CompiledCache(cache_dir=str(tmp_dir / "compiled_files"))
-
-
-def _make_sqlite_cache(tmp_dir):
-    return SQLiteCompiledCache(db_path=tmp_dir / "compiled.db")
 
 
 # ── SQLite History Benchmark ────────────────────────────────
 def bench_sqlite_history(tmp_dir: Path) -> dict:
     print(f"\n{'─' * 60}")
-    print(f"  SQLiteBackend: History Queries")
+    print("  SQLiteBackend: History Queries")
     print(f"{'─' * 60}")
 
     results = {}
@@ -307,35 +277,36 @@ def main() -> None:
     tmp_root = Path(tempfile.mkdtemp(prefix="assets_bench_"))
     print(f"  Temp dir: {tmp_root}")
 
-    # Create source files for compiled-cache benchmarks
+    # Create source files for file-index benchmarks
     src_dir = tmp_root / "source_files"
     src_dir.mkdir()
     print(f"  Generating {NUM_ASSETS} source files...")
     for i in range(NUM_ASSETS):
         (src_dir / f"model_{i:04d}.json").write_text(
-            json.dumps({"name": f"model_{i:04d}", "kind": "data_model", "index": i})
+            json.dumps(
+                {
+                    "name": f"model_{i:04d}",
+                    "kind": "data_model",
+                    "index": i,
+                }
+            )
         )
 
-    all_results = {}
+    all_results: dict[str, dict] = {}
 
     # ── State backends ──
     for label, factory in [
-        ("MemoryBackend", _make_memory),
-        ("LocalJSONBackend", _make_local_json),
-        ("SQLiteBackend", _make_sqlite),
+        ("SQLite(:memory:)", _make_memory),
+        ("SQLite(file)", _make_sqlite),
     ]:
         sub = tmp_root / label.lower()
         sub.mkdir()
         all_results[label] = bench_state_backend(label, factory, sub)
 
-    # ── Compiled caches ──
-    for label, factory in [
-        ("CompiledCache (file)", _make_file_cache),
-        ("SQLiteCompiledCache", _make_sqlite_cache),
-    ]:
-        sub = tmp_root / label.lower().replace(" ", "_").replace("(", "").replace(")", "")
-        sub.mkdir()
-        all_results[label] = bench_compiled_cache(label, factory, sub, src_dir)
+    # ── File index ──
+    sub = tmp_root / "file_index"
+    sub.mkdir()
+    all_results["FileIndex"] = bench_file_index("FileIndex (SQLite)", sub, src_dir)
 
     # ── SQLite history queries ──
     all_results["SQLiteBackend History"] = bench_sqlite_history(tmp_root)
@@ -346,11 +317,17 @@ def main() -> None:
     print(f"{'=' * 60}")
 
     # State backends comparison
-    print(f"\n  {'Operation':<30} {'Memory':>10} {'LocalJSON':>10} {'SQLite':>10}")
-    print(f"  {'─' * 60}")
-    for op in ["save_first", "save_overwrite", "load", "list_envs", "delete_env"]:
+    print(f"\n  {'Operation':<30} {':memory:':>10} {'file':>10}")
+    print(f"  {'─' * 50}")
+    for op in [
+        "save_first",
+        "save_overwrite",
+        "load",
+        "list_envs",
+        "delete_env",
+    ]:
         row = f"  {op:<30}"
-        for backend_name in ["MemoryBackend", "LocalJSONBackend", "SQLiteBackend"]:
+        for backend_name in ["SQLite(:memory:)", "SQLite(file)"]:
             if op in all_results.get(backend_name, {}):
                 val = all_results[backend_name][op]["median_ms"]
                 row += f" {val:>9.2f}"
@@ -358,18 +335,17 @@ def main() -> None:
                 row += f" {'n/a':>9}"
         print(row)
 
-    # Compiled cache comparison
-    print(f"\n  {'Operation':<30} {'File':>10} {'SQLite':>10}")
-    print(f"  {'─' * 50}")
-    for op in ["put_cold", "put_batch", "get_hit", "get_miss", "clean_no_orphans"]:
-        row = f"  {op:<30}"
-        for cache_name in ["CompiledCache (file)", "SQLiteCompiledCache"]:
-            if op in all_results.get(cache_name, {}):
-                val = all_results[cache_name][op]["median_ms"]
-                row += f" {val:>9.2f}"
-            else:
-                row += f" {'n/a':>9}"
-        print(row)
+    # File index
+    print(f"\n  {'Operation':<30} {'SQLite':>10}")
+    print(f"  {'─' * 40}")
+    for op in [
+        "put_cold",
+        "diff_all_fresh",
+        "clean_no_orphans",
+    ]:
+        if op in all_results.get("FileIndex", {}):
+            val = all_results["FileIndex"][op]["median_ms"]
+            print(f"  {op:<30} {val:>9.2f}")
 
     # History queries
     print(f"\n  {'History Query':<30} {'SQLite':>10}")

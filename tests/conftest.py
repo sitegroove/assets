@@ -25,29 +25,32 @@ def registry() -> Registry:
 @pytest.fixture
 def sample_assets() -> list[Asset]:
     return [
-        Asset(name="raw.users", kind="source", tags=["raw"]),
+        Asset(id="raw.users", type="source", tags=["raw"]),
         Asset(
-            name="staging.users",
-            kind="data_model",
+            id="staging.users",
+            type="data_model",
             tags=["staging", "pii"],
-            sql="SELECT * FROM {{ ref('raw.users') }}",
+            sql="SELECT * FROM raw.users",
+            depends_on=["raw.users"],
         ),
         Asset(
-            name="staging.payments",
-            kind="data_model",
+            id="staging.payments",
+            type="data_model",
             tags=["staging"],
-            sql="SELECT * FROM {{ ref('raw.payments') }}",
+            sql="SELECT * FROM raw.payments",
+            depends_on=["raw.payments"],
         ),
-        Asset(name="raw.payments", kind="source", tags=["raw"]),
+        Asset(id="raw.payments", type="source", tags=["raw"]),
         Asset(
-            name="mart.enriched",
-            kind="data_model",
+            id="mart.enriched",
+            type="data_model",
             tags=["mart"],
             sql=(
                 "SELECT u.*, p.amount "
-                "FROM {{ ref('staging.users') }} u "
-                "JOIN {{ ref('staging.payments') }} p ON u.id = p.user_id"
+                "FROM staging.users u "
+                "JOIN staging.payments p ON u.id = p.user_id"
             ),
+            depends_on=["staging.users", "staging.payments"],
         ),
     ]
 
