@@ -53,7 +53,7 @@ class TestStateManagerCreate:
 
         envs = {
             "production": Environment(name="production"),
-            "staging": Environment(name="staging", parent="production"),
+            "staging": Environment(name="staging"),
         }
         registry = Registry()
         _load_json_assets(registry, models)
@@ -160,8 +160,6 @@ class TestEnvironmentConfigBehavior:
         # Ad-hoc environment for PR branch
         env = config.get("pr-142")
         assert env.name == "pr-142"
-        assert env.parent is None
-        assert env.shallow is False
 
     def test_get_unknown_raises_when_implicit_disabled(self):
         import pytest
@@ -184,7 +182,8 @@ class TestEnvironmentConfigBehavior:
 
 
 class TestApplyValidationBehavior:
-    def test_apply_empty_plan_validates_environment(self, tmp_path: Path):
+    def test_apply_empty_plan_returns_early(self, tmp_path: Path):
+        """Empty plan should return immediately without touching backend."""
         registry = Registry()
         manager = StateManager.create(
             registry,
@@ -192,7 +191,7 @@ class TestApplyValidationBehavior:
             environments={"production": Environment(name="production")},
             default_env="production",
         )
-        manager.env_config.allow_implicit_environments = False
-
-        with pytest.raises(ValueError, match="not configured"):
-            manager.apply(Plan(environment="ghost"))
+        # Empty plan returns early (no lock, no save)
+        result = manager.apply(Plan(environment="production"))
+        assert result.applied == 0
+        assert result.environment == "production"

@@ -250,7 +250,7 @@ def test_bench_save_full_1k(
 ) -> None:
     """Full save of 1K assets to SQLite."""
     assets, _ = assets_1k
-    backend = SQLiteBackend(db_path=tmp_path / "bench.db")
+    backend = SQLiteBackend(base_path=tmp_path / "bench_state")
     snapshot = StateSnapshot(
         environment="bench",
         assets={
@@ -274,7 +274,7 @@ def test_bench_save_incremental_10k(
 ) -> None:
     """Incremental save of 30 changed assets out of 10K."""
     assets, _ = assets_10k
-    backend = SQLiteBackend(db_path=tmp_path / "bench.db")
+    backend = SQLiteBackend(base_path=tmp_path / "bench_state")
     snapshot = StateSnapshot(
         environment="bench",
         assets={

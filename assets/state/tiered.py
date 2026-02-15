@@ -5,10 +5,18 @@ The remote path can be a cloud bucket (S3/GCS/Azure) or a local
 directory (e.g. mounted network drive, attached S3 disk).
 plan() never hits remote — always reads local. apply() syncs to both.
 
-Remote layout:
+Remote layout (per-environment)::
+
     <remote_path>/
-    ├── state.db           ← full SQLite database
-    └── snapshot.json      ← lightweight sync metadata
+    ├── production/
+    │   ├── state.db
+    │   └── snapshot.json
+    ├── staging/
+    │   ├── state.db
+    │   └── snapshot.json
+    └── dev/
+        ├── state.db
+        └── snapshot.json
 
 snapshot.json:
     {"fingerprint": "<sha256-of-db>", "version": <int>, "updated_at": "<iso>"}
@@ -91,13 +99,19 @@ class TieredBackend(StateBackend):
     ``az://``) **or** a plain local directory (e.g. a mounted
     network drive or S3 volume).
 
-    Sync protocol:
-    - Remote stores: state.db + snapshot.json
-    - On load(): check local snapshot fingerprint vs remote snapshot.json.
+    Each environment has its own ``state.db`` and ``snapshot.json``
+    under a dedicated subdirectory (both locally and remotely),
+    providing full physical isolation between environments.
+
+    Sync protocol (per environment):
+    - Remote stores: ``{env}/state.db`` + ``{env}/snapshot.json``
+    - On ``load()``: check local fingerprint vs remote snapshot.
       If different, pull remote state.db first.
-    - On save(): write to local SQLite, then push state.db + snapshot.json.
-    - lock(): acquires remote lock file, then delegates to local SQLite lock.
-    - sync(): public method to manually pull remote state.
+    - On ``save()``: write to local SQLite, then push state.db +
+      snapshot.json.
+    - ``lock()``: acquires remote lock file, then delegates to
+      local SQLite lock.
+    - ``sync()``: public method to manually pull remote state.
 
     Usage::
 
@@ -124,148 +138,173 @@ class TieredBackend(StateBackend):
         self._fs, self._root = fsspec.core.url_to_fs(remote_path, **storage_options)
         self._root = self._root.rstrip("/")
 
-        self._local_db_path = Path(local_path) / "state.db"
-        self._local = SQLiteBackend(db_path=self._local_db_path)
+        self._local = SQLiteBackend(base_path=local_path)
         self._lock_timeout = lock_timeout
         self._lock_retries = lock_retries
 
-        # Track local snapshot fingerprint for skip-sync optimization
-        self._local_fingerprint: str = ""
-        self._synced = False
+        # Per-environment sync tracking
+        self._local_fingerprints: dict[str, str] = {}
+        self._synced: dict[str, bool] = {}
         self._remote_locks: set[str] = set()
 
-    # ─── Remote paths ──────────────────────────────────────
+    # ─── Remote paths (per-environment) ────────────────────
 
-    @property
-    def _remote_db_path(self) -> str:
-        return f"{self._root}/state.db"
+    def _remote_env_dir(self, environment: str) -> str:
+        return f"{self._root}/{environment}"
 
-    @property
-    def _remote_snapshot_path(self) -> str:
-        return f"{self._root}/snapshot.json"
+    def _remote_db_path(self, environment: str) -> str:
+        return f"{self._root}/{environment}/state.db"
+
+    def _remote_snapshot_path(self, environment: str) -> str:
+        return f"{self._root}/{environment}/snapshot.json"
 
     def _remote_lock_path(self, environment: str) -> str:
         return f"{self._root}/{environment}.lock"
 
-    # ─── Sync protocol ─────────────────────────────────────
+    # ─── Local paths ───────────────────────────────────────
 
-    def _remote_snapshot(self) -> RemoteSnapshot | None:
-        """Fetch remote snapshot.json. Returns None if not found."""
+    def _local_db_path(self, environment: str) -> Path:
+        return self._local.env_db_path(environment)
+
+    # ─── Sync protocol (per-environment) ───────────────────
+
+    def _remote_snapshot(self, environment: str) -> RemoteSnapshot | None:
+        """Fetch remote snapshot.json for an environment."""
+        snapshot_path = self._remote_snapshot_path(environment)
         try:
-            if not self._fs.exists(self._remote_snapshot_path):
+            if not self._fs.exists(snapshot_path):
                 return None
-            data = self._fs.cat_file(self._remote_snapshot_path)
+            data = self._fs.cat_file(snapshot_path)
             return RemoteSnapshot.from_json(data)
         except FileNotFoundError:
             return None
         except Exception:
             logger.warning(
                 "Failed to read remote snapshot at %s",
-                self._remote_snapshot_path,
+                snapshot_path,
                 exc_info=True,
             )
             return None
 
-    def _needs_sync(self) -> bool:
-        """Check whether local state is stale compared to remote.
+    def _needs_sync(self, environment: str) -> bool:
+        """Check whether local state for an env is stale vs remote.
 
         Compares local DB fingerprint against remote snapshot.json.
         Returns True if a pull is needed, False if local is up-to-date.
         """
-        remote_snap = self._remote_snapshot()
+        remote_snap = self._remote_snapshot(environment)
         if remote_snap is None:
             # No remote state yet — local is authoritative
             return False
 
-        local_fp = _db_fingerprint(self._local_db_path)
+        local_db = self._local_db_path(environment)
+        local_fp = _db_fingerprint(local_db)
         if local_fp == remote_snap.fingerprint:
             return False
 
         return True
 
-    def _ensure_synced(self) -> None:
-        """Pull remote state if stale. Called before load()."""
-        if self._synced:
+    def _ensure_synced(self, environment: str) -> None:
+        """Pull remote state for an env if stale. Called before load()."""
+        if self._synced.get(environment, False):
             return
-        if self._needs_sync():
-            self.pull()
-        self._synced = True
+        if self._needs_sync(environment):
+            self.pull(environment)
+        self._synced[environment] = True
 
-    def pull(self) -> None:
-        """Download remote state.db to local, replacing the local copy.
+    def pull(self, environment: str) -> None:
+        """Download remote state.db to local for a specific environment.
 
         Closes the local SQLite connection before overwriting the file,
         then reopens on next access.
         """
+        remote_db = self._remote_db_path(environment)
         try:
-            if not self._fs.exists(self._remote_db_path):
-                logger.debug("No remote state.db found at %s", self._remote_db_path)
+            if not self._fs.exists(remote_db):
+                logger.debug("No remote state.db found at %s", remote_db)
                 return
 
             # Close local connection before overwriting
-            self._local.close()
+            self._local.close_env(environment)
 
-            self._local_db_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = self._local_db_path.with_suffix(".db.download")
+            local_db = self._local_db_path(environment)
+            local_db.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = local_db.with_suffix(".db.download")
             try:
-                self._fs.get_file(self._remote_db_path, str(tmp_path))
-                shutil.move(str(tmp_path), str(self._local_db_path))
+                self._fs.get_file(remote_db, str(tmp_path))
+                shutil.move(str(tmp_path), str(local_db))
             except Exception:
                 tmp_path.unlink(missing_ok=True)
                 raise
 
-            self._local_fingerprint = _db_fingerprint(self._local_db_path)
-            logger.info("Pulled remote state.db → %s", self._local_db_path)
+            self._local_fingerprints[environment] = _db_fingerprint(local_db)
+            logger.info("Pulled remote state.db for '%s' → %s", environment, local_db)
 
         except FileNotFoundError:
-            logger.debug("Remote state.db not found, starting fresh")
+            logger.debug(
+                "Remote state.db not found for '%s', starting fresh", environment
+            )
 
-    def push(self) -> None:
-        """Upload local state.db and snapshot.json to remote.
+    def push(self, environment: str) -> None:
+        """Upload local state.db and snapshot.json to remote for an env.
 
         Flushes WAL to ensure the database file is self-contained,
-        computes fingerprint, then uploads both files atomically.
+        computes fingerprint, then uploads both files.
         """
+        local_db = self._local_db_path(environment)
+
         # Flush WAL so the .db file is self-contained
-        self._local.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self._local.conn(environment).execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
         # Compute fingerprint BEFORE upload to avoid TOCTOU
-        fp = _db_fingerprint(self._local_db_path)
-        self._local_fingerprint = fp
+        fp = _db_fingerprint(local_db)
+        self._local_fingerprints[environment] = fp
 
-        self._fs.mkdirs(self._root, exist_ok=True)
+        env_dir = self._remote_env_dir(environment)
+        self._fs.mkdirs(env_dir, exist_ok=True)
 
         # Upload state.db
-        self._fs.put_file(str(self._local_db_path), self._remote_db_path)
+        self._fs.put_file(str(local_db), self._remote_db_path(environment))
 
         # Upload snapshot.json
         snapshot = RemoteSnapshot(
             fingerprint=fp,
-            version=self._snapshot_version() + 1,
+            version=self._snapshot_version(environment) + 1,
             updated_at=datetime.now(timezone.utc).isoformat(),
         )
-        self._fs.pipe_file(self._remote_snapshot_path, snapshot.to_json())
-        logger.info("Pushed local state.db → %s", self._remote_db_path)
+        self._fs.pipe_file(self._remote_snapshot_path(environment), snapshot.to_json())
+        logger.info(
+            "Pushed local state.db for '%s' → %s",
+            environment,
+            self._remote_db_path(environment),
+        )
 
-    def _snapshot_version(self) -> int:
-        """Get current remote snapshot version, or 0 if none exists."""
-        snap = self._remote_snapshot()
+    def _snapshot_version(self, environment: str) -> int:
+        """Get current remote snapshot version for an env, or 0."""
+        snap = self._remote_snapshot(environment)
         return snap.version if snap else 0
 
-    def sync(self) -> None:
+    def sync(self, environment: str | None = None) -> None:
         """Public method: pull remote state if stale.
 
         Call this explicitly to refresh local state from remote
         without waiting for the next load() call.
+
+        When *environment* is ``None``, syncs all known environments.
         """
-        self._synced = False
-        self._ensure_synced()
+        if environment is not None:
+            self._synced.pop(environment, None)
+            self._ensure_synced(environment)
+        else:
+            self._synced.clear()
+            for env in self.list_environments():
+                self._ensure_synced(env)
 
     # ─── StateBackend interface ────────────────────────────
 
     def load(self, environment: str) -> StateSnapshot | None:
         """Load state from local SQLite, syncing from remote if stale."""
-        self._ensure_synced()
+        self._ensure_synced(environment)
         return self._local.load(environment)
 
     def save(
@@ -277,7 +316,7 @@ class TieredBackend(StateBackend):
     ) -> None:
         """Save state to local SQLite, then push to remote."""
         self._local.save(environment, state, changed_ids=changed_ids)
-        self.push()
+        self.push(environment)
 
     @contextmanager
     def lock(self, environment: str) -> Generator[None, None, None]:
@@ -295,8 +334,8 @@ class TieredBackend(StateBackend):
         self._acquire_remote_lock(environment)
         try:
             # Sync after acquiring lock to get latest state
-            self._synced = False
-            self._ensure_synced()
+            self._synced.pop(environment, None)
+            self._ensure_synced(environment)
 
             with self._local.lock(environment):
                 yield
@@ -304,14 +343,64 @@ class TieredBackend(StateBackend):
             self._release_remote_lock(environment)
 
     def list_environments(self) -> list[str]:
-        """List environments from local SQLite (synced)."""
-        self._ensure_synced()
-        return self._local.list_environments()
+        """List environments from remote storage.
+
+        Scans for subdirectories containing ``state.db``.
+        Falls back to local listing if remote is unavailable.
+        """
+        try:
+            entries = self._fs.ls(self._root, detail=False)
+            envs: list[str] = []
+            for entry in entries:
+                entry_str = str(entry).rstrip("/")
+                env_name = entry_str.rsplit("/", 1)[-1]
+                # Skip lock files
+                if env_name.endswith(".lock"):
+                    continue
+                db_path = f"{entry_str}/state.db"
+                try:
+                    if self._fs.exists(db_path):
+                        envs.append(env_name)
+                except Exception:
+                    continue
+            return sorted(envs)
+        except FileNotFoundError:
+            return []
+        except Exception:
+            logger.warning(
+                "Failed to list remote environments, falling back to local",
+                exc_info=True,
+            )
+            return self._local.list_environments()
 
     def delete_environment(self, environment: str) -> None:
-        """Delete environment from local and push to remote."""
+        """Delete environment from local and remote storage."""
+        # Delete local
         self._local.delete_environment(environment)
-        self.push()
+        self._synced.pop(environment, None)
+        self._local_fingerprints.pop(environment, None)
+
+        # Delete remote
+        try:
+            env_dir = self._remote_env_dir(environment)
+            if self._fs.exists(env_dir):
+                self._fs.rm(env_dir, recursive=True)
+        except Exception:
+            logger.warning(
+                "Failed to delete remote state for '%s'",
+                environment,
+                exc_info=True,
+            )
+
+    def copy_environment(self, source: str, target: str) -> None:
+        """Copy state from one environment to another.
+
+        Ensures the source is synced locally, copies the local DB
+        file, then pushes the target to remote.
+        """
+        self._ensure_synced(source)
+        self._local.copy_environment(source, target)
+        self.push(target)
 
     # ─── Remote locking ────────────────────────────────────
 
@@ -450,7 +539,7 @@ class TieredBackend(StateBackend):
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Return version history from local SQLite."""
-        self._ensure_synced()
+        self._ensure_synced(environment)
         return self._local.asset_history(environment, asset_id, limit=limit)
 
     def environment_changelog(
@@ -461,7 +550,7 @@ class TieredBackend(StateBackend):
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Return environment changelog from local SQLite."""
-        self._ensure_synced()
+        self._ensure_synced(environment)
         return self._local.environment_changelog(environment, since=since, limit=limit)
 
     def asset_version(
@@ -471,16 +560,32 @@ class TieredBackend(StateBackend):
         version: int,
     ) -> dict[str, Any] | None:
         """Retrieve a specific historical version from local SQLite."""
-        self._ensure_synced()
+        self._ensure_synced(environment)
         return self._local.asset_version(environment, asset_id, version)
 
     def prune_history(self, *, keep_days: int = 90) -> int:
         """Delete old history entries from local SQLite, then push."""
-        count = self._local.prune_history(keep_days=keep_days)
-        if count > 0:
-            self.push()
-        return count
+        envs = self._local.list_environments()
+        total = 0
+        for env in envs:
+            c = self._local.conn(env)
+            cur = c.execute(
+                """DELETE FROM assets_history
+                   WHERE recorded_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)""",
+                (f"-{keep_days} days",),
+            )
+            dep_cur = c.execute(
+                """DELETE FROM dependencies_history
+                   WHERE recorded_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)""",
+                (f"-{keep_days} days",),
+            )
+            env_total = (cur.rowcount or 0) + (dep_cur.rowcount or 0)
+            c.commit()
+            if env_total > 0:
+                self.push(env)
+            total += env_total
+        return total
 
     def close(self) -> None:
-        """Close the local SQLite connection."""
+        """Close the local SQLite connections."""
         self._local.close()

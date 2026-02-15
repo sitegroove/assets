@@ -1,7 +1,7 @@
 """State models, environment config, and backend interfaces."""
 
 from assets.state.backend import StateBackend
-from assets.state.db import connect_state
+from assets.state.db import connect_index, connect_state
 from assets.state.environment import Environment, EnvironmentConfig
 from assets.state.models import AssetState, DependencyState, StateSnapshot
 from assets.state.sqlite import SQLiteBackend
@@ -16,5 +16,6 @@ __all__ = [
     "StateBackend",
     "StateSnapshot",
     "TieredBackend",
+    "connect_index",
     "connect_state",
 ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -95,7 +96,7 @@ class TestMemoryBackend:
 
 
 class TestTieredBackend:
-    """Test TieredBackend using fsspec's local filesystem (memory:// or file://)."""
+    """Test TieredBackend using fsspec's local filesystem."""
 
     def _make_backend(self, tmp_path: Path) -> Any:
         from assets.state.tiered import TieredBackend
@@ -124,19 +125,32 @@ class TestTieredBackend:
         assert "a" in loaded.assets
 
     def test_push_creates_remote_files(self, tmp_path: Path) -> None:
+        """Remote files are created under {root}/{env}/."""
         backend = self._make_backend(tmp_path)
         state = StateSnapshot(environment="dev")
         backend.save("dev", state)
 
-        # Verify remote files exist
+        # Verify remote files exist at per-environment paths
         remote_dir = tmp_path / "remote"
-        assert (remote_dir / "state.db").exists()
-        assert (remote_dir / "snapshot.json").exists()
+        assert (remote_dir / "dev" / "state.db").exists()
+        assert (remote_dir / "dev" / "snapshot.json").exists()
 
         # Verify snapshot.json content
-        snap = json.loads((remote_dir / "snapshot.json").read_text())
+        snap = json.loads((remote_dir / "dev" / "snapshot.json").read_text())
         assert "fingerprint" in snap
         assert snap["version"] >= 1
+
+    def test_push_creates_separate_env_dirs(self, tmp_path: Path) -> None:
+        """Each environment gets its own remote subdirectory."""
+        backend = self._make_backend(tmp_path)
+        backend.save("dev", StateSnapshot(environment="dev"))
+        backend.save("prod", StateSnapshot(environment="prod"))
+
+        remote_dir = tmp_path / "remote"
+        assert (remote_dir / "dev" / "state.db").exists()
+        assert (remote_dir / "prod" / "state.db").exists()
+        assert (remote_dir / "dev" / "snapshot.json").exists()
+        assert (remote_dir / "prod" / "snapshot.json").exists()
 
     def test_pull_syncs_from_remote(self, tmp_path: Path) -> None:
         """A second TieredBackend instance can pull state from remote."""
@@ -165,7 +179,7 @@ class TestTieredBackend:
         backend.save("dev", state)
 
         # Sync should not need to pull (already up to date)
-        assert not backend._needs_sync()
+        assert not backend._needs_sync("dev")
 
     def test_sync_detects_remote_change(self, tmp_path: Path) -> None:
         """When another instance pushes, the first detects staleness."""
@@ -179,7 +193,7 @@ class TestTieredBackend:
         remote_dir = tmp_path / "remote"
         local_dir2 = tmp_path / "local2"
         backend2 = TieredBackend(str(remote_dir), local_path=local_dir2)
-        backend2.pull()
+        backend2.pull("dev")
         state2 = StateSnapshot(
             environment="dev",
             assets={"new": AssetState(id="new", fingerprint="fp_new")},
@@ -187,8 +201,8 @@ class TestTieredBackend:
         backend2.save("dev", state2)
 
         # backend1 should detect the change
-        backend1._synced = False
-        assert backend1._needs_sync()
+        backend1._synced["dev"] = False
+        assert backend1._needs_sync("dev")
 
     def test_list_environments(self, tmp_path: Path) -> None:
         backend = self._make_backend(tmp_path)
@@ -197,11 +211,34 @@ class TestTieredBackend:
         envs = backend.list_environments()
         assert set(envs) == {"dev", "prod"}
 
+    def test_list_environments_ignores_lock_files(self, tmp_path: Path) -> None:
+        """list_environments() skips .lock files in remote."""
+        backend = self._make_backend(tmp_path)
+        backend.save("dev", StateSnapshot(environment="dev"))
+
+        # Create a lock file in remote root
+        remote_dir = tmp_path / "remote"
+        (remote_dir / "dev.lock").write_text("token")
+
+        envs = backend.list_environments()
+        assert envs == ["dev"]
+
     def test_delete_environment(self, tmp_path: Path) -> None:
         backend = self._make_backend(tmp_path)
         backend.save("dev", StateSnapshot(environment="dev"))
         backend.delete_environment("dev")
         assert backend.load("dev") is None
+
+    def test_delete_environment_removes_remote_dir(self, tmp_path: Path) -> None:
+        """delete_environment() removes the remote env subdirectory."""
+        backend = self._make_backend(tmp_path)
+        backend.save("dev", StateSnapshot(environment="dev"))
+
+        remote_env_dir = tmp_path / "remote" / "dev"
+        assert remote_env_dir.exists()
+
+        backend.delete_environment("dev")
+        assert not remote_env_dir.exists()
 
     def test_lock(self, tmp_path: Path) -> None:
         backend = self._make_backend(tmp_path)
@@ -222,18 +259,18 @@ class TestTieredBackend:
         backend = self._make_backend(tmp_path)
         backend.save("dev", StateSnapshot(environment="dev"))
 
-        snap1 = json.loads((tmp_path / "remote" / "snapshot.json").read_text())
+        snap1 = json.loads((tmp_path / "remote" / "dev" / "snapshot.json").read_text())
         assert snap1["version"] == 1
 
         backend.save("dev", StateSnapshot(environment="dev"))
-        snap2 = json.loads((tmp_path / "remote" / "snapshot.json").read_text())
+        snap2 = json.loads((tmp_path / "remote" / "dev" / "snapshot.json").read_text())
         assert snap2["version"] == 2
 
     def test_close_cleans_up(self, tmp_path: Path) -> None:
         backend = self._make_backend(tmp_path)
         backend.save("dev", StateSnapshot(environment="dev"))
         backend.close()
-        assert getattr(backend, "_local")._conn is None
+        assert getattr(backend, "_local")._connections == {}
 
     def test_double_lock_raises(self, tmp_path: Path) -> None:
         backend = self._make_backend(tmp_path)
@@ -268,8 +305,8 @@ class TestTieredBackend:
             backend.save("dev", StateSnapshot(environment="dev"))
             loaded = backend.load("dev")
             assert loaded is not None
-        # Connection should be closed after exit
-        assert getattr(backend, "_local")._conn is None
+        # Connections should be closed after exit
+        assert getattr(backend, "_local")._connections == {}
 
     def test_remote_snapshot_missing_after_exists_returns_none(
         self,
@@ -278,7 +315,7 @@ class TestTieredBackend:
         backend = self._make_backend(tmp_path)
         with patch.object(backend._fs, "exists", return_value=True):
             with patch.object(backend._fs, "cat_file", side_effect=FileNotFoundError):
-                assert backend._remote_snapshot() is None
+                assert backend._remote_snapshot("dev") is None
 
     def test_remote_snapshot_unexpected_error_returns_none(
         self, tmp_path: Path
@@ -286,34 +323,143 @@ class TestTieredBackend:
         backend = self._make_backend(tmp_path)
         with patch.object(backend._fs, "exists", return_value=True):
             with patch.object(backend._fs, "cat_file", side_effect=RuntimeError):
-                assert backend._remote_snapshot() is None
+                assert backend._remote_snapshot("dev") is None
 
     def test_pull_without_remote_db_is_noop(self, tmp_path: Path) -> None:
         backend = self._make_backend(tmp_path)
-        assert not backend._local_db_path.exists()
+        local_db = backend._local_db_path("dev")
+        assert not local_db.exists()
 
-        backend.pull()
+        backend.pull("dev")
 
-        assert not backend._local_db_path.exists()
+        assert not local_db.exists()
 
     def test_pull_race_file_not_found_is_swallowed(self, tmp_path: Path) -> None:
         backend = self._make_backend(tmp_path)
 
         with patch.object(backend._fs, "exists", return_value=True):
             with patch.object(backend._fs, "get_file", side_effect=FileNotFoundError):
-                backend.pull()
+                backend.pull("dev")
 
-        assert not backend._local_db_path.exists()
+        assert not backend._local_db_path("dev").exists()
 
     def test_sync_resets_synced_before_ensure(self, tmp_path: Path) -> None:
         backend = self._make_backend(tmp_path)
-        backend._synced = True
+        backend._synced["dev"] = True
 
         with patch.object(backend, "_ensure_synced") as ensure_synced:
-            backend.sync()
+            backend.sync("dev")
 
-        ensure_synced.assert_called_once()
-        assert backend._synced is False
+        ensure_synced.assert_called_once_with("dev")
+        assert backend._synced.get("dev") is not True
+
+    def test_sync_all_environments(self, tmp_path: Path) -> None:
+        """sync(None) syncs all known environments."""
+        backend = self._make_backend(tmp_path)
+        backend.save("dev", StateSnapshot(environment="dev"))
+        backend.save("prod", StateSnapshot(environment="prod"))
+
+        # Mark both as synced
+        backend._synced["dev"] = True
+        backend._synced["prod"] = True
+
+        # sync() with no arg syncs all
+        backend.sync()
+
+        # After sync, both should be re-synced
+        assert backend._synced.get("dev") is True
+        assert backend._synced.get("prod") is True
+
+    def test_per_env_sync_tracking(self, tmp_path: Path) -> None:
+        """_synced is per-environment; syncing one doesn't affect others."""
+        backend = self._make_backend(tmp_path)
+        backend.save("dev", StateSnapshot(environment="dev"))
+        backend.save("prod", StateSnapshot(environment="prod"))
+
+        # Reset only dev sync state
+        backend._synced.pop("dev", None)
+        prod_synced_before = backend._synced.get("prod")
+
+        backend.sync("dev")
+
+        # prod sync state unchanged
+        assert backend._synced.get("prod") == prod_synced_before
+
+    def test_copy_environment(self, tmp_path: Path) -> None:
+        """copy_environment() copies state to a new env and pushes."""
+        backend = self._make_backend(tmp_path)
+        state = StateSnapshot(
+            environment="dev",
+            assets={"a": AssetState(id="a", fingerprint="fp1")},
+        )
+        backend.save("dev", state)
+
+        backend.copy_environment("dev", "staging")
+
+        loaded = backend.load("staging")
+        assert loaded is not None
+        assert "a" in loaded.assets
+        assert loaded.assets["a"].fingerprint == "fp1"
+
+    def test_copy_environment_pushes_to_remote(self, tmp_path: Path) -> None:
+        """copy_environment() pushes the target to remote."""
+        backend = self._make_backend(tmp_path)
+        state = StateSnapshot(
+            environment="dev",
+            assets={"a": AssetState(id="a", fingerprint="fp1")},
+        )
+        backend.save("dev", state)
+
+        backend.copy_environment("dev", "staging")
+
+        # Verify remote files exist for staging
+        remote_dir = tmp_path / "remote"
+        assert (remote_dir / "staging" / "state.db").exists()
+        assert (remote_dir / "staging" / "snapshot.json").exists()
+
+    def test_copy_environment_independent_of_source(self, tmp_path: Path) -> None:
+        """Changes to copied env don't affect the source."""
+        backend = self._make_backend(tmp_path)
+        state = StateSnapshot(
+            environment="dev",
+            assets={"a": AssetState(id="a", fingerprint="fp1")},
+        )
+        backend.save("dev", state)
+        backend.copy_environment("dev", "staging")
+
+        # Modify staging
+        staging_state = StateSnapshot(
+            environment="staging",
+            assets={"b": AssetState(id="b", fingerprint="fp2")},
+        )
+        backend.save("staging", staging_state)
+
+        # Source should be unchanged
+        dev_loaded = backend.load("dev")
+        assert dev_loaded is not None
+        assert "a" in dev_loaded.assets
+        assert "b" not in dev_loaded.assets
+
+    def test_copy_environment_visible_to_other_instances(self, tmp_path: Path) -> None:
+        """A second instance can load the copied environment from remote."""
+        from assets.state.tiered import TieredBackend
+
+        backend1 = self._make_backend(tmp_path)
+        state = StateSnapshot(
+            environment="dev",
+            assets={"a": AssetState(id="a", fingerprint="fp1")},
+        )
+        backend1.save("dev", state)
+        backend1.copy_environment("dev", "staging")
+
+        # Second instance
+        remote_dir = tmp_path / "remote"
+        local_dir2 = tmp_path / "local2"
+        backend2 = TieredBackend(str(remote_dir), local_path=local_dir2)
+
+        loaded = backend2.load("staging")
+        assert loaded is not None
+        assert "a" in loaded.assets
 
 
 # ─── TieredBackend locking edge cases ──────────────────────
@@ -425,8 +571,6 @@ class TestTieredBackendLockingEdgeCases:
         Uses a real mtime backdate to trigger stale detection without
         affecting our own newly-written lock files.
         """
-        import os
-
         backend = self._make_backend(tmp_path, lock_timeout=5, lock_retries=5)
         lock_path = backend._remote_lock_path("dev")
 
@@ -479,15 +623,11 @@ class TestTieredBackendLockingEdgeCases:
     def test_stale_locks_reappearing_terminates(self, tmp_path: Path) -> None:
         """If stale locks keep reappearing, loop terminates after retries.
 
-        Covers fix m3: attempt increments on stale lock removal.
-
         Overrides ``_try_remove_stale_lock`` in a test subclass so it
         removes the lock *and* immediately recreates a new stale one.
         This deterministically simulates another process that keeps
         crashing and leaving stale locks — no threading race.
         """
-        import os
-
         from assets.state.tiered import TieredBackend
 
         class ReappearingStaleLockBackend(TieredBackend):
@@ -670,7 +810,10 @@ class TestTieredBackendDelegation:
 
         # Save v2
         state.assets["a"] = AssetState(
-            id="a", fingerprint="v2", version=2, data={"sql": "SELECT 2"}
+            id="a",
+            fingerprint="v2",
+            version=2,
+            data={"sql": "SELECT 2"},
         )
         backend.save("dev", state)
 
@@ -689,11 +832,7 @@ class TestTieredBackendDelegation:
         assert v3 is None
 
     def test_prune_history_delegates_and_pushes(self, tmp_path: Path) -> None:
-        """prune_history() delegates to local, pushes if rows pruned.
-
-        Verified by checking that the remote snapshot.json version
-        increments after prune (same approach as the no-rows test).
-        """
+        """prune_history() delegates to local, pushes if rows pruned."""
         backend = self._make_backend(tmp_path)
 
         # Create history entries
@@ -704,20 +843,24 @@ class TestTieredBackendDelegation:
         backend.save("dev", state)
 
         # Record remote snapshot version after save
-        snap_before = json.loads((tmp_path / "remote" / "snapshot.json").read_text())
+        snap_before = json.loads(
+            (tmp_path / "remote" / "dev" / "snapshot.json").read_text()
+        )
 
         # Backdate history so prune has something to remove
-        backend._local.conn.execute(
+        backend._local.conn("dev").execute(
             "UPDATE assets_history SET recorded_at = '2020-01-01T00:00:00.000Z'"
         )
-        backend._local.conn.commit()
+        backend._local.conn("dev").commit()
 
         # Prune
         count = backend.prune_history(keep_days=0)
         assert count > 0
 
         # Remote snapshot version should have incremented (push happened)
-        snap_after = json.loads((tmp_path / "remote" / "snapshot.json").read_text())
+        snap_after = json.loads(
+            (tmp_path / "remote" / "dev" / "snapshot.json").read_text()
+        )
         assert snap_after["version"] > snap_before["version"]
 
     def test_prune_history_no_rows_skips_push(self, tmp_path: Path) -> None:
@@ -727,14 +870,18 @@ class TestTieredBackendDelegation:
         # Save state so remote snapshot exists
         backend.save("dev", StateSnapshot(environment="dev"))
 
-        snap_before = json.loads((tmp_path / "remote" / "snapshot.json").read_text())
+        snap_before = json.loads(
+            (tmp_path / "remote" / "dev" / "snapshot.json").read_text()
+        )
 
         # Prune with keep_days=9999 — nothing old enough to prune
         count = backend.prune_history(keep_days=9999)
         assert count == 0
 
         # Snapshot should NOT have changed (no push)
-        snap_after = json.loads((tmp_path / "remote" / "snapshot.json").read_text())
+        snap_after = json.loads(
+            (tmp_path / "remote" / "dev" / "snapshot.json").read_text()
+        )
         assert snap_after["version"] == snap_before["version"]
 
     def test_asset_history_and_changelog_delegate(self, tmp_path: Path) -> None:
@@ -770,6 +917,18 @@ class TestTieredBackendDelegation:
 
         assert "dev" not in backend._remote_locks
 
+    def test_conn_is_method_taking_environment(self, tmp_path: Path) -> None:
+        """backend._local.conn(environment) is a method, not property."""
+        backend = self._make_backend(tmp_path)
+        backend.save("dev", StateSnapshot(environment="dev"))
+
+        # conn is a method that takes environment name
+        conn = backend._local.conn("dev")
+        assert conn is not None
+
+        row = conn.execute("SELECT * FROM state_metadata").fetchone()
+        assert row is not None
+
 
 # ─── Context manager tests for all backends ────────────────
 
@@ -781,7 +940,7 @@ class TestBackendContextManager:
             assert backend.load("dev") is not None
 
     def test_sqlite_backend_context_manager(self, tmp_path: Path) -> None:
-        with SQLiteBackend(db_path=tmp_path / "state.db") as backend:
+        with SQLiteBackend(base_path=tmp_path / "state") as backend:
             backend.save("dev", StateSnapshot(environment="dev"))
             assert backend.load("dev") is not None
-        assert getattr(backend, "_conn") is None
+        assert getattr(backend, "_connections") == {}

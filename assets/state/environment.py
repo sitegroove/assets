@@ -11,8 +11,6 @@ class Environment(BaseModel):
     """A single environment definition."""
 
     name: str
-    parent: str | None = None
-    shallow: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

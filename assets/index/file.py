@@ -9,8 +9,10 @@ The index does **not** store compiled asset data — that lives in
 the state backend's ``assets`` table.  The index only answers
 "has this file changed since last indexing?"
 
-The index tables (``index_entries``, ``index_deps``) live inside
-the shared ``state.db`` -- there is no separate database file.
+Index tables (``index_entries``, ``index_deps``) live in a
+**separate** ``index.db`` database that is never synced to remote
+storage.  This avoids pushing machine-local file metadata to
+shared state.
 
 Entries are scoped by a logical *group* name so that multiple
 independent source roots (e.g. modules installed in different
@@ -18,8 +20,7 @@ locations) can coexist without collision.
 
 **Mtime tracking** is stored in a local JSON file (never synced
 to remote) so that mtime-only changes (save/revert, git checkout)
-do not dirty the shared ``state.db`` and trigger unnecessary
-remote pushes.
+do not dirty the index database.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from assets.index.base import Index
+from assets.state.db import connect_index
 
 logger = logging.getLogger(__name__)
 
@@ -157,10 +159,10 @@ class FileIndex(Index):
 
     def __init__(
         self,
-        conn: sqlite3.Connection,
+        index_db_path: str | Path,
         cache_dir: Path,
     ) -> None:
-        self._conn = conn
+        self._conn = connect_index(index_db_path)
         self._mtime_cache = MtimeCache(cache_dir / "mtime_cache.json")
 
     @property
@@ -168,8 +170,9 @@ class FileIndex(Index):
         return self._conn
 
     def close(self) -> None:
-        """Flush the mtime cache. Connection is owned by the backend."""
+        """Close the index DB connection and flush the mtime cache."""
         self._mtime_cache.flush()
+        self._conn.close()
 
     # ── helpers ──────────────────────────────────────────────
 

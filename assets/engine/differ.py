@@ -52,7 +52,7 @@ class Differ:
             existing = current.get(asset.id)
             fp = asset.fingerprint  # cached — computed once
 
-            if existing is None or existing.deleted:
+            if existing is None:
                 # New asset
                 asset_changes.append(
                     Change(
@@ -81,7 +81,7 @@ class Differ:
 
         # Deletions: assets in state but not in desired
         for name, state in current.items():
-            if name not in desired_names and not state.deleted:
+            if name not in desired_names:
                 asset_changes.append(
                     Change(
                         action="delete",

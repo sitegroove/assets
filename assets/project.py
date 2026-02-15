@@ -42,7 +42,8 @@ class Project:
             return
 
         if backend is None:
-            backend = SQLiteBackend(db_path=Path(state_dir) / "state.db")
+            assert state_dir is not None  # guarded by early return above
+            backend = SQLiteBackend(base_path=state_dir)
 
         if env_config is None:
             env_config = EnvironmentConfig(
@@ -154,11 +155,10 @@ class Project:
         self,
         name: str,
         parent: str | None = None,
-        shallow: bool = True,
     ) -> Environment:
-        """Create a new environment."""
+        """Create a new environment by copying the parent's state."""
         manager = self._require_manager()
-        return manager.create_environment(name, parent=parent, shallow=shallow)
+        return manager.create_environment(name, parent=parent)
 
     def destroy_environment(self, name: str) -> None:
         """Destroy an environment, unless protected."""

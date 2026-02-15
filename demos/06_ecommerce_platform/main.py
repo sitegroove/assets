@@ -736,12 +736,11 @@ def main() -> None:
 
     # ── Set up infrastructure ──
 
-    backend = SQLiteBackend(db_path=tmp / "state.db")
+    backend = SQLiteBackend(base_path=tmp / "state")
     env_config = EnvironmentConfig(
         default="production",
         environments={
             "production": Environment(name="production"),
-            "staging": Environment(name="staging", parent="production"),
         },
     )
     project = Project(
@@ -877,8 +876,8 @@ def main() -> None:
     print("  Step 7: Dev workflow → promote to production")
     print(f"{'─' * 70}")
 
-    dev = manager.create_environment("dev_alice", parent="production", shallow=True)
-    print(f"  Created env: {dev.name} (parent={dev.parent}, shallow={dev.shallow})")
+    dev = manager.create_environment("dev_alice", parent="production")
+    print(f"  Created env: {dev.name}")
 
     # Alice modifies the revenue mart — adds a new metric column
     write_model(

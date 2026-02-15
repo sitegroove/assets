@@ -1,4 +1,14 @@
-"""Database manager — SQLite connection handling and schema bootstrap."""
+"""Database manager — SQLite connection handling and schema bootstrap.
+
+Two separate databases:
+
+- **state.db** (per-environment directory): asset state, dependencies,
+  and append-only history.  One database per environment, synced to
+  remote storage when using ``TieredBackend``.
+
+- **index.db** (local-only, at the base path): file-index entries and
+  their dependency edges.  Never synced to remote.
+"""
 
 from __future__ import annotations
 
@@ -8,10 +18,11 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# ─── State schema (one DB per environment) ─────────────────────────
+
 STATE_SCHEMA = """\
--- ─── Environment metadata ──────────────────────────────────
-CREATE TABLE IF NOT EXISTS environments (
-    name        TEXT PRIMARY KEY,
+-- ─── State metadata ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS state_metadata (
     version     INTEGER NOT NULL DEFAULT 1,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
@@ -20,37 +31,29 @@ CREATE TABLE IF NOT EXISTS environments (
 
 -- ─── Asset state ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS assets (
-    environment  TEXT    NOT NULL,
-    id           TEXT    NOT NULL,
+    id           TEXT    PRIMARY KEY,
     type         TEXT    NOT NULL DEFAULT '',
     fingerprint  TEXT    NOT NULL,
     data         TEXT    NOT NULL DEFAULT '{}',
     applied_at   TEXT    NOT NULL,
     applied_by   TEXT    NOT NULL DEFAULT '',
-    version      INTEGER NOT NULL DEFAULT 1,
-    deleted      INTEGER NOT NULL DEFAULT 0,
-
-    PRIMARY KEY (environment, id),
-    FOREIGN KEY (environment) REFERENCES environments(name)
+    version      INTEGER NOT NULL DEFAULT 1
 );
 
 -- ─── Dependencies ──────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS dependencies (
-    environment TEXT NOT NULL,
     source      TEXT NOT NULL,
     target      TEXT NOT NULL,
     type        TEXT NOT NULL DEFAULT '',
     fingerprint TEXT NOT NULL,
     data        TEXT NOT NULL DEFAULT '{}',
 
-    PRIMARY KEY (environment, source, target, type),
-    FOREIGN KEY (environment) REFERENCES environments(name)
+    PRIMARY KEY (source, target, type)
 );
 
 -- ─── Asset history (append-only) ───────────────────────────
 CREATE TABLE IF NOT EXISTS assets_history (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    environment  TEXT    NOT NULL,
     asset_id     TEXT    NOT NULL,
     action       TEXT    NOT NULL,
     type         TEXT    NOT NULL DEFAULT '',
@@ -59,36 +62,29 @@ CREATE TABLE IF NOT EXISTS assets_history (
     applied_at   TEXT    NOT NULL,
     applied_by   TEXT    NOT NULL DEFAULT '',
     version      INTEGER NOT NULL,
-    recorded_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-
-    FOREIGN KEY (environment) REFERENCES environments(name)
+    recorded_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 -- ─── Dependency history (append-only) ──────────────────────
 CREATE TABLE IF NOT EXISTS dependencies_history (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    environment  TEXT NOT NULL,
     action       TEXT NOT NULL,
     source       TEXT NOT NULL,
     target       TEXT NOT NULL,
     type         TEXT NOT NULL DEFAULT '',
     fingerprint  TEXT NOT NULL,
     data         TEXT NOT NULL DEFAULT '{}',
-    recorded_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-
-    FOREIGN KEY (environment) REFERENCES environments(name)
+    recorded_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 -- ─── Indexes ───────────────────────────────────────────────
-CREATE INDEX IF NOT EXISTS idx_assets_env         ON assets(environment);
-CREATE INDEX IF NOT EXISTS idx_assets_type        ON assets(environment, type);
-CREATE INDEX IF NOT EXISTS idx_assets_fingerprint ON assets(environment, fingerprint);
-CREATE INDEX IF NOT EXISTS idx_deps_env           ON dependencies(environment);
-CREATE INDEX IF NOT EXISTS idx_deps_target        ON dependencies(environment, target);
+CREATE INDEX IF NOT EXISTS idx_assets_type        ON assets(type);
+CREATE INDEX IF NOT EXISTS idx_assets_fingerprint ON assets(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_deps_target        ON dependencies(target);
 CREATE INDEX IF NOT EXISTS idx_history_asset
-    ON assets_history(environment, asset_id, version);
+    ON assets_history(asset_id, version);
 CREATE INDEX IF NOT EXISTS idx_history_time
-    ON assets_history(environment, recorded_at);
+    ON assets_history(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_history_author     ON assets_history(applied_by);
 
 -- ─── Triggers for automatic history ────────────────────────
@@ -102,10 +98,10 @@ DROP TRIGGER IF EXISTS trg_deps_delete;
 CREATE TRIGGER IF NOT EXISTS trg_assets_insert AFTER INSERT ON assets
 BEGIN
     INSERT INTO assets_history
-        (environment, asset_id, action, type, fingerprint, data,
+        (asset_id, action, type, fingerprint, data,
          applied_at, applied_by, version)
     VALUES
-        (NEW.environment, NEW.id, 'create', NEW.type, NEW.fingerprint,
+        (NEW.id, 'create', NEW.type, NEW.fingerprint,
          NEW.data, NEW.applied_at, NEW.applied_by, NEW.version);
 END;
 
@@ -113,20 +109,20 @@ CREATE TRIGGER IF NOT EXISTS trg_assets_update AFTER UPDATE ON assets
     WHEN OLD.fingerprint != NEW.fingerprint
 BEGIN
     INSERT INTO assets_history
-        (environment, asset_id, action, type, fingerprint, data,
+        (asset_id, action, type, fingerprint, data,
          applied_at, applied_by, version)
     VALUES
-        (NEW.environment, NEW.id, 'update', NEW.type, NEW.fingerprint,
+        (NEW.id, 'update', NEW.type, NEW.fingerprint,
          NEW.data, NEW.applied_at, NEW.applied_by, NEW.version);
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_assets_delete AFTER DELETE ON assets
 BEGIN
     INSERT INTO assets_history
-        (environment, asset_id, action, type, fingerprint, data,
+        (asset_id, action, type, fingerprint, data,
          applied_at, applied_by, version)
     VALUES
-        (OLD.environment, OLD.id, 'delete', OLD.type, OLD.fingerprint,
+        (OLD.id, 'delete', OLD.type, OLD.fingerprint,
          OLD.data, OLD.applied_at, OLD.applied_by, OLD.version);
 END;
 
@@ -134,9 +130,9 @@ END;
 CREATE TRIGGER IF NOT EXISTS trg_deps_insert AFTER INSERT ON dependencies
 BEGIN
     INSERT INTO dependencies_history
-        (environment, action, source, target, type, fingerprint, data)
+        (action, source, target, type, fingerprint, data)
     VALUES
-        (NEW.environment, 'create', NEW.source, NEW.target, NEW.type,
+        ('create', NEW.source, NEW.target, NEW.type,
          NEW.fingerprint, NEW.data);
 END;
 
@@ -146,21 +142,25 @@ CREATE TRIGGER IF NOT EXISTS trg_deps_update AFTER UPDATE ON dependencies
        OR OLD.target != NEW.target
 BEGIN
     INSERT INTO dependencies_history
-        (environment, action, source, target, type, fingerprint, data)
+        (action, source, target, type, fingerprint, data)
     VALUES
-        (NEW.environment, 'update', NEW.source, NEW.target, NEW.type,
+        ('update', NEW.source, NEW.target, NEW.type,
          NEW.fingerprint, NEW.data);
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_deps_delete AFTER DELETE ON dependencies
 BEGIN
     INSERT INTO dependencies_history
-        (environment, action, source, target, type, fingerprint, data)
+        (action, source, target, type, fingerprint, data)
     VALUES
-        (OLD.environment, 'delete', OLD.source, OLD.target, OLD.type,
+        ('delete', OLD.source, OLD.target, OLD.type,
          OLD.fingerprint, OLD.data);
 END;
+"""
 
+# ─── Index schema (local-only, separate DB) ────────────────────────
+
+INDEX_SCHEMA = """\
 -- ─── File index entries ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS index_entries (
     grp          TEXT NOT NULL DEFAULT '',
@@ -200,7 +200,7 @@ def _configure_connection(conn: sqlite3.Connection) -> None:
 
 
 def connect_state(db_path: str | Path) -> sqlite3.Connection:
-    """Open (or create) the state database, applying schema if needed.
+    """Open (or create) a per-environment state database.
 
     Accepts ``":memory:"`` for a transient in-memory database (useful
     for testing).  In that case no filesystem directories are created.
@@ -214,4 +214,22 @@ def connect_state(db_path: str | Path) -> sqlite3.Connection:
     _configure_connection(conn)
     conn.executescript(STATE_SCHEMA)
     logger.debug("State database ready at %s", str_path)
+    return conn
+
+
+def connect_index(db_path: str | Path) -> sqlite3.Connection:
+    """Open (or create) the local-only file index database.
+
+    Accepts ``":memory:"`` for a transient in-memory database (useful
+    for testing).  In that case no filesystem directories are created.
+    """
+    str_path = str(db_path)
+    if str_path != ":memory:":
+        db_path = Path(db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str_path)
+    conn.row_factory = sqlite3.Row
+    _configure_connection(conn)
+    conn.executescript(INDEX_SCHEMA)
+    logger.debug("Index database ready at %s", str_path)
     return conn

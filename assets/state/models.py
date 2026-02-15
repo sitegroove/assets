@@ -18,7 +18,6 @@ class AssetState(BaseModel):
     applied_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     applied_by: str = ""
     version: int = 1
-    deleted: bool = False
 
 
 class DependencyState(BaseModel):

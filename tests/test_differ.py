@@ -75,11 +75,12 @@ class TestDiffer:
         assert change.action == "update"
         assert any(fc.field == "type" for fc in change.field_changes)
 
-    def test_skip_deleted_tombstones(self):
+    def test_existing_asset_with_different_fingerprint_is_update(self):
+        """Without tombstones, an existing asset with different fingerprint is an update."""
         asset = Asset(id="test")
-        current = {"test": AssetState(id="test", fingerprint="x", deleted=True)}
+        current = {"test": AssetState(id="test", fingerprint="x")}
         cs = self.differ.diff([asset], current)
-        assert cs.asset_changes[0].action == "create"
+        assert cs.asset_changes[0].action == "update"
 
     def test_field_changes_detail(self):
         asset = Asset(id="test", description="new desc", tags=["a", "b"])

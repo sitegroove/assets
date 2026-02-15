@@ -8,7 +8,6 @@ class TestAssetState:
         s = AssetState(id="test", fingerprint="abc")
         assert s.id == "test"
         assert s.version == 1
-        assert s.deleted is False
 
     def test_with_data(self):
         s = AssetState(
@@ -18,10 +17,6 @@ class TestAssetState:
             data={"name": "test", "kind": "model"},
         )
         assert s.data["kind"] == "model"
-
-    def test_deleted_tombstone(self):
-        s = AssetState(id="test", fingerprint="abc", deleted=True)
-        assert s.deleted is True
 
 
 class TestDependencyState:

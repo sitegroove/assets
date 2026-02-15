@@ -10,7 +10,6 @@ from unittest.mock import patch
 import pytest
 
 from assets.index.file import FileIndex, MtimeCache
-from assets.state.db import connect_state
 
 
 def _bump_mtime(path: Path, delta_ns: int = 1_000_000_000) -> None:
@@ -31,10 +30,8 @@ def tmp_project(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def index(tmp_path: Path) -> FileIndex:
-    """FileIndex backed by a temp state database."""
-    local_path = tmp_path / ".state"
-    conn = connect_state(local_path / "state.db")
-    return FileIndex(conn, local_path)
+    """FileIndex backed by an in-memory index database."""
+    return FileIndex(":memory:", tmp_path)
 
 
 # ── MtimeCache unit tests ───────────────────────────────────
@@ -317,7 +314,7 @@ class TestFileIndexDiff:
         """Save/revert: mtime changes, content same -> no SQLite write.
 
         This is the key invariant: mtime-only changes must NOT modify
-        state.db, preventing unnecessary remote pushes.
+        the index database, preventing unnecessary remote pushes.
         """
         src = tmp_project / "models" / "users.yaml"
         index.put_file(

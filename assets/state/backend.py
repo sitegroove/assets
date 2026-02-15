@@ -12,6 +12,10 @@ from assets.state.models import StateSnapshot
 class StateBackend(ABC):
     """Abstract base class for state storage backends.
 
+    Each environment's state is stored independently (one database
+    per environment).  Backends manage the mapping from environment
+    name to storage location transparently.
+
     All backends support the context manager protocol for
     clean resource management::
 
@@ -61,6 +65,19 @@ class StateBackend(ABC):
     def delete_environment(self, environment: str) -> None:
         """Delete state for an environment."""
         ...
+
+    def copy_environment(self, source: str, target: str) -> None:
+        """Copy state from one environment to another.
+
+        Default implementation loads the source snapshot and saves it
+        to the target.  Subclasses may override with more efficient
+        mechanisms (e.g., file copy for SQLiteBackend, remote copy
+        for TieredBackend).
+        """
+        state = self.load(source)
+        if state is not None:
+            state.environment = target
+            self.save(target, state)
 
     def close(self) -> None:
         """Release any held resources (connections, file handles).

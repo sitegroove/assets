@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from assets.state.db import connect_state
+from assets.state.db import connect_index, connect_state
 
 
 def test_connect_state_in_memory_creates_core_tables() -> None:
@@ -15,13 +15,31 @@ def test_connect_state_in_memory_creates_core_tables() -> None:
         ).fetchall()
         names = {row["name"] for row in rows}
 
-        assert "environments" in names
+        assert "state_metadata" in names
         assert "assets" in names
         assert "dependencies" in names
         assert "assets_history" in names
         assert "dependencies_history" in names
+        # index tables are now in a separate DB
+        assert "index_entries" not in names
+        assert "index_deps" not in names
+    finally:
+        conn.close()
+
+
+def test_connect_index_in_memory_creates_index_tables() -> None:
+    conn = connect_index(":memory:")
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+        names = {row["name"] for row in rows}
+
         assert "index_entries" in names
         assert "index_deps" in names
+        # state tables should NOT be in the index DB
+        assert "assets" not in names
+        assert "dependencies" not in names
     finally:
         conn.close()
 

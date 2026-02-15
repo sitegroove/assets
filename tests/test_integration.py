@@ -231,13 +231,9 @@ class TestFullWorkflow:
         registry = Registry()
         backend = SQLiteBackend.memory()
         config = EnvironmentConfig(
-            default="development",
+            default="production",
             environments={
                 "production": Environment(name="production"),
-                "staging": Environment(name="staging", parent="production"),
-                "development": Environment(
-                    name="development", parent="production", shallow=True
-                ),
             },
         )
         mgr = StateManager(registry, backend, config)
@@ -247,20 +243,21 @@ class TestFullWorkflow:
         plan = mgr.plan(environment="production")
         mgr.apply(plan, environment="production")
 
-        # Dev should inherit (no changes)
+        # Create dev from production (copy-on-create)
+        mgr.create_environment("development", parent="production")
+
+        # Dev should have same state (no changes)
         registry.clear()
         _load_json_assets(registry, full_project / "models")
         dev_plan = mgr.plan(environment="development")
         assert not dev_plan.has_changes
 
-        # Promote production → staging
-        promote = mgr.promote_to("staging", from_env="production")
-        assert promote.has_changes
-        mgr.apply(promote, environment="staging")
-
-        # No more promotion needed
-        promote2 = mgr.promote_to("staging", from_env="production")
-        assert not promote2.has_changes
+        # Verify copy isolation: production state survives dev being modified
+        prod_state = backend.load("production")
+        dev_state = backend.load("development")
+        assert prod_state is not None
+        assert dev_state is not None
+        assert set(prod_state.assets.keys()) == set(dev_state.assets.keys())
 
     def test_row_count_not_fingerprinted(self, full_project: Path):
         """row_count changes should NOT trigger a plan change."""

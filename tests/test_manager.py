@@ -47,13 +47,10 @@ def project_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def env_config() -> EnvironmentConfig:
     return EnvironmentConfig(
-        default="development",
+        default="production",
         environments={
             "production": Environment(name="production"),
-            "staging": Environment(name="staging", parent="production"),
-            "development": Environment(
-                name="development", parent="production", shallow=True
-            ),
+            "staging": Environment(name="staging"),
         },
     )
 
@@ -96,7 +93,6 @@ class TestStateManager:
         assert result.applied == 2
 
     def test_plan_detects_update(self, manager: StateManager, project_dir: Path):
-        # First apply
         manager.registry.clear()
         _load_json_assets(manager.registry, project_dir / "models")
         plan = manager.plan(environment="production")
@@ -133,6 +129,28 @@ class TestStateManager:
         assert len(deletes) == 1
         assert deletes[0].asset_id == "raw.orders"
 
+    def test_apply_delete_removes_from_state(
+        self, manager: StateManager, project_dir: Path
+    ):
+        """After applying a delete, the asset is fully removed from state."""
+        manager.registry.clear()
+        _load_json_assets(manager.registry, project_dir / "models")
+        plan = manager.plan(environment="production")
+        manager.apply(plan, environment="production")
+
+        # Remove orders from registry
+        (project_dir / "models" / "orders.json").unlink()
+        manager.registry.clear()
+        _load_json_assets(manager.registry, project_dir / "models")
+
+        delete_plan = manager.plan(environment="production")
+        manager.apply(delete_plan, environment="production")
+
+        state = manager.backend.load("production")
+        assert state is not None
+        assert "raw.orders" not in state.assets
+        assert "raw.users" in state.assets
+
     def test_plan_with_selector(self, manager: StateManager, project_dir: Path):
         manager.registry.clear()
         _load_json_assets(manager.registry, project_dir / "models")
@@ -144,21 +162,6 @@ class TestStateManager:
         assert len(creates) == 1
         assert creates[0].asset_id == "raw.users"
 
-    def test_shallow_env_inherits_parent(
-        self, manager: StateManager, project_dir: Path
-    ):
-        # Apply to production
-        manager.registry.clear()
-        _load_json_assets(manager.registry, project_dir / "models")
-        plan = manager.plan(environment="production")
-        manager.apply(plan, environment="production")
-
-        # Plan for shallow dev — should see no changes since parent has everything
-        manager.registry.clear()
-        _load_json_assets(manager.registry, project_dir / "models")
-        plan_dev = manager.plan(environment="development")
-        assert not plan_dev.has_changes
-
     def test_promote(self, manager: StateManager, project_dir: Path):
         # Apply to production
         manager.registry.clear()
@@ -166,7 +169,7 @@ class TestStateManager:
         plan = manager.plan(environment="production")
         manager.apply(plan, environment="production")
 
-        # Promote production → staging
+        # Promote production -> staging
         promote_plan = manager.promote_to("staging", from_env="production")
         assert promote_plan.has_changes
         manager.apply(promote_plan, environment="staging")
@@ -175,60 +178,9 @@ class TestStateManager:
         promote_plan2 = manager.promote_to("staging", from_env="production")
         assert not promote_plan2.has_changes
 
-    def test_create_environment(self, manager: StateManager):
-        env = manager.create_environment("pr-123", parent="production", shallow=True)
-        assert env.name == "pr-123"
-        assert env.shallow is True
-        assert "pr-123" in manager.env_config.environments
-
-    def test_destroy_environment(self, manager: StateManager):
-        manager.create_environment("temp")
-        manager.destroy_environment("temp")
-        assert "temp" not in manager.env_config.environments
-
-    def test_destroy_protected_raises(self, manager: StateManager):
-        with pytest.raises(ValueError, match="protected"):
-            manager.destroy_environment("production")
-
-    def test_drift(self, manager: StateManager, project_dir: Path):
-        manager.registry.clear()
-        _load_json_assets(manager.registry, project_dir / "models")
-        plan = manager.plan(environment="production")
-        manager.apply(plan, environment="production")
-
-        # No drift initially
-        manager.registry.clear()
-        _load_json_assets(manager.registry, project_dir / "models")
-        drift = manager.drift(environment="production")
-        assert not drift.has_changes
-
-    def test_apply_empty_changeset_is_noop(
-        self, manager: StateManager, project_dir: Path
-    ):
-        manager.registry.clear()
-        _load_json_assets(manager.registry, project_dir / "models")
-        plan = manager.plan(environment="production")
-        manager.apply(plan, environment="production")
-
-        # Second plan has no changes
-        manager.registry.clear()
-        _load_json_assets(manager.registry, project_dir / "models")
-        plan2 = manager.plan(environment="production")
-        assert not plan2.has_changes
-
-        # Apply should be a noop (no I/O, no lock)
-        result = manager.apply(plan2, environment="production")
-        assert result.applied == 0
-        assert result.created == 0
-
-    def test_create_environment_invalid_parent_raises(self, manager: StateManager):
-        with pytest.raises(ValueError, match="does not exist"):
-            manager.create_environment("pr-123", parent="nonexistent")
-
     def test_promote_missing_source_env(self, manager: StateManager):
         # Source env has no state yet — should return empty plan
         plan = manager.promote_to("staging", from_env="production")
-        # production has no state, so promote produces empty plan
         assert not plan.has_changes
 
     def test_promote_selector_graph_traversal_uses_dependencies(
@@ -275,21 +227,116 @@ class TestStateManager:
         selected = {c.asset_id for c in plan.changeset.asset_changes}
         assert selected == {"raw.users", "staging.users", "mart.enriched"}
 
-    def test_circular_parent_env_raises(self):
-        config = EnvironmentConfig(
-            default="a",
-            environments={
-                "a": Environment(name="a", parent="b", shallow=True),
-                "b": Environment(name="b", parent="a", shallow=True),
-            },
-        )
-        mgr = StateManager(
-            Registry(),
-            SQLiteBackend.memory(),
-            config,
-        )
-        with pytest.raises(ValueError, match="Circular parent reference"):
-            mgr._resolve_state(config.environments["a"])
+    def test_create_environment(self, manager: StateManager):
+        env = manager.create_environment("pr-123", parent="production")
+        assert env.name == "pr-123"
+        assert "pr-123" in manager.env_config.environments
+
+    def test_create_environment_copies_parent_state(
+        self, manager: StateManager, project_dir: Path
+    ):
+        """Creating an env from a parent copies the parent's state."""
+        manager.registry.clear()
+        _load_json_assets(manager.registry, project_dir / "models")
+        plan = manager.plan(environment="production")
+        manager.apply(plan, environment="production")
+
+        # Create dev from production
+        manager.create_environment("dev", parent="production")
+
+        # dev should have the same assets as production
+        dev_state = manager.backend.load("dev")
+        prod_state = manager.backend.load("production")
+        assert dev_state is not None
+        assert prod_state is not None
+        assert set(dev_state.assets.keys()) == set(prod_state.assets.keys())
+
+    def test_create_environment_is_independent(
+        self, manager: StateManager, project_dir: Path
+    ):
+        """After creation, parent and child environments are independent."""
+        manager.registry.clear()
+        _load_json_assets(manager.registry, project_dir / "models")
+        plan = manager.plan(environment="production")
+        manager.apply(plan, environment="production")
+
+        # Create dev from production
+        manager.create_environment("dev", parent="production")
+
+        # Apply a change only in dev: add a new asset
+        manager.registry.register(Asset(id="dev.only", type="test"))
+        dev_plan = manager.plan(environment="dev")
+        manager.apply(dev_plan, environment="dev")
+
+        # dev should have the new asset, production should not
+        dev_state = manager.backend.load("dev")
+        prod_state = manager.backend.load("production")
+        assert dev_state is not None
+        assert prod_state is not None
+        assert "dev.only" in dev_state.assets
+        assert "dev.only" not in prod_state.assets
+
+    def test_create_environment_from_empty_parent(self, manager: StateManager):
+        """Creating an env from a parent with no state yields empty state."""
+        manager.create_environment("empty-child", parent="production")
+        child_state = manager.backend.load("empty-child")
+        # Parent had no state, so child has no state either
+        assert child_state is None
+
+    def test_destroy_environment(self, manager: StateManager):
+        manager.create_environment("temp")
+        manager.destroy_environment("temp")
+        assert "temp" not in manager.env_config.environments
+
+    def test_destroy_protected_raises(self, manager: StateManager):
+        with pytest.raises(ValueError, match="protected"):
+            manager.destroy_environment("production")
+
+    def test_drift(self, manager: StateManager, project_dir: Path):
+        manager.registry.clear()
+        _load_json_assets(manager.registry, project_dir / "models")
+        plan = manager.plan(environment="production")
+        manager.apply(plan, environment="production")
+
+        # No drift initially
+        manager.registry.clear()
+        _load_json_assets(manager.registry, project_dir / "models")
+        drift = manager.drift(environment="production")
+        assert not drift.has_changes
+
+    def test_drift_detects_new_asset(self, manager: StateManager, project_dir: Path):
+        """Drift detects assets added to registry after last apply."""
+        manager.registry.clear()
+        _load_json_assets(manager.registry, project_dir / "models")
+        plan = manager.plan(environment="production")
+        manager.apply(plan, environment="production")
+
+        # Add a new asset to registry
+        manager.registry.register(Asset(id="raw.events", type="source"))
+        drift = manager.drift(environment="production")
+        assert drift.has_changes
+        creates = [c for c in drift.changeset.asset_changes if c.action == "create"]
+        assert len(creates) == 1
+        assert creates[0].asset_id == "raw.events"
+
+    def test_apply_empty_changeset_is_noop(
+        self, manager: StateManager, project_dir: Path
+    ):
+        manager.registry.clear()
+        _load_json_assets(manager.registry, project_dir / "models")
+        plan = manager.plan(environment="production")
+        manager.apply(plan, environment="production")
+
+        # Second plan has no changes
+        manager.registry.clear()
+        _load_json_assets(manager.registry, project_dir / "models")
+        plan2 = manager.plan(environment="production")
+        assert not plan2.has_changes
+
+        # Apply should be a noop
+        result = manager.apply(plan2, environment="production")
+        assert result.applied == 0
+        assert result.created == 0
 
 
 class TestApplyVersionIncrement:
@@ -397,90 +444,6 @@ class TestApplyVersionIncrement:
         assert state.assets["raw.users"].version == 3
 
 
-class TestResolveStateEmptyDependencies:
-    """A shallow child env with dependencies=[] should keep empty list."""
-
-    def test_empty_deps_not_overridden_by_parent(self) -> None:
-        """When child has dependencies=[] (empty, not None), it should NOT
-        fall through to parent's dependencies.
-        """
-        backend = SQLiteBackend.memory()
-        registry = Registry()
-
-        parent_deps = [
-            DependencyState(
-                source="staging.users",
-                target="raw.users",
-                fingerprint="depfp1",
-            )
-        ]
-        # Parent has dependencies
-        backend.save(
-            "production",
-            StateSnapshot(
-                environment="production",
-                assets={"a": AssetState(id="a", fingerprint="fp1")},
-                dependencies=parent_deps,
-            ),
-        )
-        # Child explicitly has EMPTY dependencies
-        backend.save(
-            "dev",
-            StateSnapshot(
-                environment="dev",
-                dependencies=[],  # explicitly empty — NOT None
-            ),
-        )
-
-        env_config = EnvironmentConfig(
-            default="dev",
-            environments={
-                "production": Environment(name="production"),
-                "dev": Environment(name="dev", parent="production", shallow=True),
-            },
-        )
-        mgr = StateManager(registry, backend, env_config)
-        resolved = mgr._resolve_state(env_config.environments["dev"])
-
-        # Should be empty — child's explicit [] wins over parent's deps
-        assert resolved.dependencies == []
-
-    def test_none_deps_inherits_from_parent(self) -> None:
-        """When child has no state at all (deps is None), parent deps are inherited."""
-        backend = SQLiteBackend.memory()
-        registry = Registry()
-
-        parent_deps = [
-            DependencyState(
-                source="staging.users",
-                target="raw.users",
-                fingerprint="depfp1",
-            )
-        ]
-        backend.save(
-            "production",
-            StateSnapshot(
-                environment="production",
-                assets={"a": AssetState(id="a", fingerprint="fp1")},
-                dependencies=parent_deps,
-            ),
-        )
-
-        env_config = EnvironmentConfig(
-            default="dev",
-            environments={
-                "production": Environment(name="production"),
-                "dev": Environment(name="dev", parent="production", shallow=True),
-            },
-        )
-        mgr = StateManager(registry, backend, env_config)
-
-        # No child state at all -> inherits parent fully
-        resolved = mgr._resolve_state(env_config.environments["dev"])
-        assert len(resolved.dependencies) == 1
-        assert resolved.dependencies[0].source == "staging.users"
-
-
 class DummyBackend(StateBackend):
     """Minimal backend used to exercise StateManager index guard rails."""
 
@@ -533,32 +496,3 @@ class TestStateManagerIndexGuards:
 
         with pytest.raises(RuntimeError, match="requires a SQLiteBackend"):
             _ = manager.index
-
-
-class TestShallowDeleteTombstones:
-    def test_apply_delete_in_shallow_env_creates_tombstone(self) -> None:
-        config = EnvironmentConfig(
-            default="dev",
-            environments={
-                "production": Environment(name="production"),
-                "dev": Environment(name="dev", parent="production", shallow=True),
-            },
-        )
-        manager = StateManager(Registry(), SQLiteBackend.memory(), config)
-
-        manager.registry.register(Asset(id="raw.users", type="source"))
-        create_plan = manager.plan(environment="dev")
-        manager.apply(create_plan, environment="dev")
-
-        manager.registry.clear()
-        delete_plan = manager.plan(environment="dev")
-        assert delete_plan.has_changes
-        manager.apply(delete_plan, environment="dev")
-
-        local_dev = manager.backend.load("dev")
-        assert local_dev is not None
-        assert "raw.users" in local_dev.assets
-        assert local_dev.assets["raw.users"].deleted is True
-
-        resolved = manager._resolve_state(config.environments["dev"])
-        assert "raw.users" not in resolved.assets

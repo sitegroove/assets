@@ -37,7 +37,7 @@ class ApplyResult(BaseModel):
 
 
 class ResolvedState(BaseModel):
-    """State after walking parent chain and merging layers."""
+    """Resolved state for an environment (no parent chain)."""
 
     assets: dict[str, AssetState] = Field(default_factory=dict)
     dependencies: list[DependencyState] = Field(default_factory=list)
@@ -46,6 +46,10 @@ class ResolvedState(BaseModel):
 
 class StateManager:
     """Main orchestrator: combines registry, backend, environments.
+
+    Each environment is physically isolated in its own database.
+    Creating an environment copies the parent's state (copy-on-create),
+    after which the two are fully independent.
 
     Typical usage::
 
@@ -83,7 +87,8 @@ class StateManager:
 
         Args:
             registry: Registry containing the assets to manage.
-            local_path: Directory for the SQLite state database.
+            local_path: Base directory for per-environment state
+                databases and the local file index.
             environments: Dict of environments. Defaults to a single
                 default env.
             default_env: Default environment name.
@@ -93,7 +98,7 @@ class StateManager:
         """
         from assets.state.sqlite import SQLiteBackend
 
-        backend = SQLiteBackend(db_path=Path(local_path) / "state.db")
+        backend = SQLiteBackend(base_path=local_path)
 
         if environments is None:
             environments = {default_env: Environment(name=default_env)}
@@ -114,11 +119,10 @@ class StateManager:
     def index(self) -> FileIndex:
         """Lazy :class:`~assets.index.file.FileIndex` for file change detection.
 
-        Requires a file-backed :class:`~assets.state.sqlite.SQLiteBackend`
-        (or :class:`~assets.state.tiered.TieredBackend`) as the backend.
-        In-memory backends (``SQLiteBackend(":memory:")``) do not support
-        file indexing because there is no filesystem directory for the
-        mtime cache.
+        The file index lives in a separate ``index.db`` at the base
+        state directory (never synced to remote).  Requires a
+        file-backed :class:`~assets.state.sqlite.SQLiteBackend`
+        (or :class:`~assets.state.tiered.TieredBackend`) as backend.
         """
         if self._index is not None:
             return self._index
@@ -143,10 +147,11 @@ class StateManager:
             raise RuntimeError(
                 "FileIndex requires a file-backed SQLiteBackend. "
                 "In-memory backends do not have a local path "
-                "for the mtime cache."
+                "for the file index."
             )
 
-        self._index = FileIndex(backend.conn, local_path)
+        index_db_path = local_path / "index.db"
+        self._index = FileIndex(index_db_path, local_path)
         return self._index
 
     def plan(
@@ -165,7 +170,7 @@ class StateManager:
         else:
             desired = self.registry.all()
 
-        # Resolve current state (walk parent chain for shallow envs)
+        # Load current state (each env is its own DB, no parent chain)
         resolved = self._resolve_state(env)
 
         # Diff
@@ -179,7 +184,6 @@ class StateManager:
     def apply(self, plan: Plan, *, environment: str | None = None) -> ApplyResult:
         """Apply a plan to state. Acquires lock, writes changes, releases."""
         env_name = environment or plan.environment
-        env = self.env_config.get(env_name)
         if not plan.changeset.asset_changes:
             return ApplyResult(environment=env_name)
 
@@ -211,14 +215,7 @@ class StateManager:
                         updated += 1
 
                 elif change.action == "delete":
-                    if env.shallow:
-                        # Tombstone for shallow envs
-                        existing = state.assets.get(change.asset_id)
-                        if existing:
-                            existing.deleted = True
-                            existing.applied_at = now
-                    else:
-                        state.assets.pop(change.asset_id, None)
+                    state.assets.pop(change.asset_id, None)
                     deleted += 1
 
             state.updated_at = now
@@ -268,7 +265,6 @@ class StateManager:
                 [
                     Asset.model_validate(asset_state.data)
                     for asset_state in source_assets.values()
-                    if not asset_state.deleted
                 ]
             )
             selected_names = GraphSelector(source_registry).execute(selector).names
@@ -281,7 +277,7 @@ class StateManager:
             selected_names = set(source_assets.keys())
             for name in selected_names:
                 asset_state = source_assets.get(name)
-                if asset_state and not asset_state.deleted:
+                if asset_state:
                     desired_assets.append(Asset.model_validate(asset_state.data))
 
         changeset = self._differ.diff(desired_assets, target_resolved.assets)
@@ -304,16 +300,24 @@ class StateManager:
         self,
         name: str,
         parent: str | None = None,
-        shallow: bool = True,
     ) -> Environment:
-        """Create a new environment."""
+        """Create a new environment by copying the parent's state.
+
+        Uses copy-on-create semantics: the parent's ``state.db`` is
+        copied into a new directory for the child environment.  From
+        that point on, the two environments are fully independent.
+
+        Args:
+            name: Name for the new environment.
+            parent: Source environment to copy from.  Defaults to the
+                active environment.
+
+        Returns:
+            The newly created :class:`Environment`.
+        """
         parent_name = parent or self.environment
-        if parent_name not in self.env_config.environments:
-            raise ValueError(
-                f"Parent environment '{parent_name}' does not exist. "
-                f"Available: {sorted(self.env_config.environments.keys())}"
-            )
-        env = Environment(name=name, parent=parent_name, shallow=shallow)
+        self.backend.copy_environment(parent_name, name)
+        env = Environment(name=name)
         self.env_config.environments[name] = env
         return env
 
@@ -324,52 +328,16 @@ class StateManager:
         self.backend.delete_environment(name)
         self.env_config.environments.pop(name, None)
 
-    def _resolve_state(
-        self, env: Environment, _seen: set[str] | None = None
-    ) -> ResolvedState:
-        """Walk parent chain, merge state layers. Local overrides parent."""
-        if _seen is None:
-            _seen = set()
-        if env.name in _seen:
-            raise ValueError(
-                f"Circular parent reference detected: '{env.name}' "
-                f"already visited in chain {sorted(_seen)}"
-            )
-        _seen.add(env.name)
+    def _resolve_state(self, env: Environment) -> ResolvedState:
+        """Load state for an environment.
 
+        Each environment is its own database — no parent chain walking.
+        """
         state = self.backend.load(env.name)
-
-        if not env.shallow or env.parent is None:
-            # Full environment — just return its state
-            if state is None:
-                return ResolvedState()
-            return ResolvedState(
-                assets=dict(state.assets),
-                dependencies=list(state.dependencies),
-                metadata=dict(state.metadata),
-            )
-
-        # Shallow environment — resolve parent first, then overlay
-        parent_env = self.env_config.get(env.parent)
-        parent_resolved = self._resolve_state(parent_env, _seen)
-
         if state is None:
-            return parent_resolved
-
-        # Overlay local state on parent
-        merged_assets = dict(parent_resolved.assets)
-        for name, asset_state in state.assets.items():
-            if asset_state.deleted:
-                merged_assets.pop(name, None)
-            else:
-                merged_assets[name] = asset_state
-
+            return ResolvedState()
         return ResolvedState(
-            assets=merged_assets,
-            dependencies=(
-                state.dependencies
-                if state.dependencies is not None
-                else parent_resolved.dependencies
-            ),
-            metadata={**parent_resolved.metadata, **state.metadata},
+            assets=dict(state.assets),
+            dependencies=list(state.dependencies),
+            metadata=dict(state.metadata),
         )

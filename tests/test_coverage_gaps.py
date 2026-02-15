@@ -34,7 +34,7 @@ class TestIncrementalSave:
 
     @pytest.fixture
     def backend(self, tmp_path: Path) -> SQLiteBackend:
-        b = SQLiteBackend(db_path=tmp_path / "state.db")
+        b = SQLiteBackend(base_path=tmp_path)
         yield b
         b.close()
 
@@ -147,7 +147,7 @@ class TestHistoryTriggerGuards:
 
     @pytest.fixture
     def backend(self, tmp_path: Path) -> SQLiteBackend:
-        b = SQLiteBackend(db_path=tmp_path / "state.db")
+        b = SQLiteBackend(base_path=tmp_path)
         yield b
         b.close()
 
@@ -266,7 +266,7 @@ class TestTieredBackendFailures:
                 backend._fs, "get_file", side_effect=IOError("download failed")
             ):
                 with pytest.raises(IOError, match="download failed"):
-                    backend.pull()
+                    backend.pull("test")
 
         backend.close()
 
@@ -276,7 +276,8 @@ class TestTieredBackendFailures:
 
         remote_dir = tmp_path / "remote"
         remote_dir.mkdir()
-        (remote_dir / "snapshot.json").write_text("not valid json{{{")
+        (remote_dir / "test").mkdir()
+        (remote_dir / "test" / "snapshot.json").write_text("not valid json{{{")
 
         backend = TieredBackend(
             str(remote_dir),
@@ -284,7 +285,7 @@ class TestTieredBackendFailures:
         )
 
         # Should not raise — returns None for corrupt snapshot
-        snap = backend._remote_snapshot()
+        snap = backend._remote_snapshot("test")
         assert snap is None
 
         backend.close()

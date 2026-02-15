@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Demo 3: Multi-Environment Workflow — shallow dev envs, promotion.
+"""Demo 3: Multi-Environment Workflow — copy-on-create, promotion.
 
-Shows how shallow environments inherit from parent, store only overrides,
-and how promotion moves changes between environments.
+Shows how creating an environment copies the parent's state,
+after which the two are fully independent.  Promotion moves
+changes between environments via plan/apply.
 
 Run: python demos/03_multi_environment/main.py
 """
@@ -95,10 +96,9 @@ models_dir.mkdir()
 print("=== Environment Configuration ===\n")
 
 config = EnvironmentConfig(
-    default="development",
+    default="production",
     environments={
         "production": Environment(name="production"),
-        "staging": Environment(name="staging", parent="production"),
     },
 )
 
@@ -114,7 +114,7 @@ assert manager is not None
 
 print("Environments:")
 for name, env in config.environments.items():
-    print(f"  {name}: parent={env.parent}, shallow={env.shallow}")
+    print(f"  {name}")
 
 # ──────────────────────────────────────────────────────────────
 # 3. Apply to production
@@ -130,17 +130,15 @@ result = project.apply(plan)
 print(f"\nApplied to production: {result.created} created")
 
 # ──────────────────────────────────────────────────────────────
-# 4. Create a shallow dev environment
+# 4. Create dev environment (copy-on-create from production)
 # ──────────────────────────────────────────────────────────────
 
-print("\n=== Create Dev Environment (shallow) ===\n")
+print("\n=== Create Dev Environment (copy from production) ===\n")
 
-dev_env = manager.create_environment("dev_alice", parent="production", shallow=True)
-print(
-    f"Created: name={dev_env.name}, parent={dev_env.parent}, shallow={dev_env.shallow}"
-)
+dev_env = manager.create_environment("dev_alice", parent="production")
+print(f"Created: name={dev_env.name}")
 
-# Dev inherits everything from production — plan should show no changes
+# Dev has a copy of production — plan should show no changes
 project.clear()
 load_json_models(project, models_dir)
 dev_plan = manager.plan(environment="dev_alice")
@@ -211,6 +209,9 @@ print(f"Production plan has_changes: {prod_plan.has_changes}")
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Promote dev_alice -> staging ===\n")
+
+# Create staging from production first
+manager.create_environment("staging", parent="production")
 
 promote_plan = manager.promote_to("staging", from_env="dev_alice")
 print(promote_plan.show())
