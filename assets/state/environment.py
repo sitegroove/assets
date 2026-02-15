@@ -20,7 +20,8 @@ class EnvironmentConfig(BaseModel):
     """Configuration for all environments."""
 
     environments: dict[str, Environment] = Field(default_factory=dict)
-    default: str = "development"
+    default: str = "default"
+    protected: set[str] = Field(default_factory=lambda: {"production"})
     allow_implicit_environments: bool = True
 
     def get(self, name: str | None = None) -> Environment:

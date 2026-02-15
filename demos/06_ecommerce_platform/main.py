@@ -42,14 +42,13 @@ from pydantic import BaseModel
 from assets import (
     Asset,
     AssetField,
+    Assets,
     DependencyResolver,
     Environment,
     EnvironmentConfig,
     FieldMapping,
-    GraphSelector,
     Registry,
     SQLiteBackend,
-    StateManager,
 )
 
 # ═══════════════════════════════════════════════════════════════
@@ -743,8 +742,15 @@ def main() -> None:
             "staging": Environment(name="staging", parent="production"),
         },
     )
-    registry = Registry()
-    manager = StateManager(registry, backend, env_config)
+    project = Assets(
+        environment="production",
+        backend=backend,
+        env_config=env_config,
+        protected_environments={"production", "staging"},
+    )
+    registry = project.registry
+    manager = project.manager
+    assert manager is not None
 
     # ── Step 1: Load the project ──
 
@@ -786,8 +792,6 @@ def main() -> None:
     print("  Step 3: Selectors")
     print(f"{'─' * 70}")
 
-    selector_engine = GraphSelector(registry)
-
     for selector in [
         "tag:pii",
         "type:mart",
@@ -795,7 +799,7 @@ def main() -> None:
         "+mart.revenue",
         "tag:finance,type:mart",
     ]:
-        result_sel = selector_engine.execute(selector)
+        result_sel = project.select(selector)
         print(f"  {selector:<30} → {sorted(result_sel.names)}")
 
     # ── Step 4: Nested asset introspection ──
@@ -850,19 +854,19 @@ def main() -> None:
     print("  Step 6: Plan & apply to production")
     print(f"{'─' * 70}")
 
-    plan = manager.plan(environment="production")
+    plan = project.plan()
     print(f"\n{plan.show()}")
 
-    apply_result = manager.apply(plan, environment="production")
+    apply_result = project.apply(plan)
     print(
         f"\n  Applied: created={apply_result.created}, updated={apply_result.updated}, "
         f"deleted={apply_result.deleted}"
     )
 
     # Re-plan should be clean
-    registry.clear()
+    project.clear()
     load_project(registry, models_dir)
-    plan2 = manager.plan(environment="production")
+    plan2 = project.plan()
     print(f"  Re-plan: has_changes={plan2.has_changes}")
 
     # ── Step 7: Dev environment — make a change, promote ──
@@ -934,7 +938,7 @@ FROM base
 GROUP BY base.country""",
     )
 
-    registry.clear()
+    project.clear()
     load_project(registry, models_dir)
     dev_plan = manager.plan(environment="dev_alice")
     print(f"\n  Dev plan:\n{dev_plan.show()}")
@@ -944,17 +948,17 @@ GROUP BY base.country""",
 
     # Production still sees the old version (dev is isolated)
     print("\n  Production drift (before merge):")
-    registry.clear()
+    project.clear()
     load_project(registry, models_dir)
-    drift_before = manager.drift(environment="production")
+    drift_before = project.drift()
     print(f"  {drift_before.show()}")
 
     # Merge: apply the modified files to production (like merging the PR)
-    registry.clear()
+    project.clear()
     load_project(registry, models_dir)
-    prod_plan = manager.plan(environment="production")
+    prod_plan = project.plan()
     print(f"  Merge to production:\n{prod_plan.show()}")
-    merge_result = manager.apply(prod_plan, environment="production")
+    merge_result = project.apply(prod_plan)
     print(f"  Merged: updated={merge_result.updated}")
 
     # ── Step 8: Drift detection (should be clean now) ──
@@ -963,9 +967,9 @@ GROUP BY base.country""",
     print("  Step 8: Drift detection")
     print(f"{'─' * 70}")
 
-    registry.clear()
+    project.clear()
     load_project(registry, models_dir)
-    drift = manager.drift(environment="production")
+    drift = project.drift()
     print(f"  Drift detected: {drift.has_changes}")
 
     # ── Step 9: Test inventory ──
@@ -1003,8 +1007,8 @@ GROUP BY base.country""",
     print(f"\n{'=' * 70}")
     print("  Summary")
     print(f"{'=' * 70}")
-    print(f"  Assets:        {len(registry)}")
-    print(f"  Dependencies:  {len(registry.dependencies)}")
+    print(f"  Assets:        {len(project)}")
+    print(f"  Dependencies:  {len(project.registry.dependencies)}")
     print(f"  Environments:  {list(env_config.environments.keys())}")
     print(f"  State backend: SQLite ({tmp / 'state.db'})")
     print(f"  PII columns:   {len(pii_fields)}")

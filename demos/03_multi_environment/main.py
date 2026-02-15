@@ -14,11 +14,10 @@ from pathlib import Path
 
 from assets import (
     Asset,
+    Assets,
     Environment,
     EnvironmentConfig,
-    Registry,
     SQLiteBackend,
-    StateManager,
 )
 
 
@@ -31,12 +30,12 @@ class DataModel(Asset):
 # ──────────────────────────────────────────────────────────────
 
 
-def load_json_models(registry: Registry, models_dir: Path) -> None:
+def load_json_models(project: Assets, models_dir: Path) -> None:
     """Discover, parse, and register JSON asset files."""
     for path in sorted(models_dir.rglob("*.json")):
         data = json.loads(path.read_text())
         asset = DataModel.model_validate(data)
-        registry.register(asset)
+        project.register(asset)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -104,8 +103,14 @@ config = EnvironmentConfig(
 )
 
 backend = SQLiteBackend.memory()
-registry = Registry()
-manager = StateManager(registry, backend, config)
+project = Assets(
+    environment="production",
+    backend=backend,
+    env_config=config,
+    protected_environments={"production", "staging"},
+)
+manager = project.manager
+assert manager is not None
 
 print("Environments:")
 for name, env in config.environments.items():
@@ -117,11 +122,11 @@ for name, env in config.environments.items():
 
 print("\n=== Apply to Production ===\n")
 
-registry.clear()
-load_json_models(registry, models_dir)
-plan = manager.plan(environment="production")
+project.clear()
+load_json_models(project, models_dir)
+plan = project.plan()
 print(plan.show())
-result = manager.apply(plan, environment="production")
+result = project.apply(plan)
 print(f"\nApplied to production: {result.created} created")
 
 # ──────────────────────────────────────────────────────────────
@@ -136,8 +141,8 @@ print(
 )
 
 # Dev inherits everything from production — plan should show no changes
-registry.clear()
-load_json_models(registry, models_dir)
+project.clear()
+load_json_models(project, models_dir)
 dev_plan = manager.plan(environment="dev_alice")
 print(f"Plan for dev_alice: has_changes={dev_plan.has_changes}")
 
@@ -165,8 +170,8 @@ print("\n=== Dev: Modify staging.users ===\n")
     )
 )
 
-registry.clear()
-load_json_models(registry, models_dir)
+project.clear()
+load_json_models(project, models_dir)
 dev_plan2 = manager.plan(environment="dev_alice")
 print(dev_plan2.show())
 
@@ -196,8 +201,8 @@ print("\n=== Production Still Clean ===\n")
     )
 )
 
-registry.clear()
-load_json_models(registry, models_dir)
+project.clear()
+load_json_models(project, models_dir)
 prod_plan = manager.plan(environment="production")
 print(f"Production plan has_changes: {prod_plan.has_changes}")
 
@@ -207,7 +212,7 @@ print(f"Production plan has_changes: {prod_plan.has_changes}")
 
 print("\n=== Promote dev_alice -> staging ===\n")
 
-promote_plan = manager.promote(from_env="dev_alice", to_env="staging")
+promote_plan = manager.promote_to("staging", from_env="dev_alice")
 print(promote_plan.show())
 
 if promote_plan.has_changes:
@@ -220,7 +225,7 @@ if promote_plan.has_changes:
 
 print("\n=== Promote staging -> production ===\n")
 
-promote_plan2 = manager.promote(from_env="staging", to_env="production")
+promote_plan2 = manager.promote_to("production", from_env="staging")
 print(promote_plan2.show())
 
 if promote_plan2.has_changes:

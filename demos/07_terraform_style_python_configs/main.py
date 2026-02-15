@@ -20,7 +20,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from assets import Asset, FileDiscovery, LoadedAsset, SourceGroup, StateManager
+from assets import Asset, Assets, LoadedAsset, SourceGroup
 
 
 # ── Consumer-owned loader ────────────────────────────────────
@@ -81,25 +81,20 @@ def main() -> None:
     state_dir = project_root / ".assets_state"
     shutil.rmtree(state_dir, ignore_errors=True)
 
-    from assets import Registry
+    project = Assets(environment="production", state_dir=str(state_dir))
 
-    registry = Registry()
-    manager = StateManager.create(registry, local_path=str(state_dir))
-
-    discovery = FileDiscovery(
-        groups=[
-            SourceGroup(
-                name="resources",
-                root=project_root,
-                directory=project_root / "resources",
-                patterns=["*.py"],
-                exclude=["__init__.py"],
-                loader=TerraformConfigLoader(
-                    deps=["project_models.py"],
-                ),
+    groups = [
+        SourceGroup(
+            name="resources",
+            root=project_root,
+            directory=project_root / "resources",
+            patterns=["*.py"],
+            exclude=["__init__.py"],
+            loader=TerraformConfigLoader(
+                deps=["project_models.py"],
             ),
-        ],
-    )
+        ),
+    ]
 
     print("=" * 70)
     print("Terraform-Style Python Config Demo")
@@ -107,22 +102,22 @@ def main() -> None:
     print(f"Project root: {project_root}")
 
     print("\n[1] First load (parses config files)")
-    result = discovery.load(manager, environment="production")
+    result = project.load(groups)
     print(result.summary())
 
-    plan = manager.plan(environment="production")
+    plan = project.plan()
     print("\n[2] Plan")
     print(plan.show())
 
-    apply_result = manager.apply(plan, environment="production")
+    apply_result = project.apply(plan)
     print(f"Applied: created={apply_result.created}, updated={apply_result.updated}")
 
     print("\n[3] Second load (hits state + file cache)")
-    registry.clear()
-    result2 = discovery.load(manager, environment="production")
+    project.clear()
+    result2 = project.load(groups)
     print(result2.summary())
 
-    graph = registry.graph
+    graph = project.graph
     print("\n[4] Lineage checks")
     print(f"Roots: {graph.roots()}")
     print(f"Leaves: {graph.leaves()}")

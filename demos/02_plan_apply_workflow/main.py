@@ -14,11 +14,10 @@ from pathlib import Path
 
 from assets import (
     Asset,
+    Assets,
     Environment,
     EnvironmentConfig,
-    Registry,
     SQLiteBackend,
-    StateManager,
 )
 
 # ──────────────────────────────────────────────────────────────
@@ -35,12 +34,12 @@ class DataModel(Asset):
 # ──────────────────────────────────────────────────────────────
 
 
-def load_json_models(registry: Registry, models_dir: Path) -> None:
+def load_json_models(project: Assets, models_dir: Path) -> None:
     """Discover, parse, and register JSON asset files."""
     for path in sorted(models_dir.rglob("*.json")):
         data = json.loads(path.read_text())
         asset = DataModel.model_validate(data)
-        registry.register(asset)
+        project.register(asset)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -103,22 +102,25 @@ print(f"Project directory: {tmpdir}\n")
 # 4. Set up the state manager
 # ──────────────────────────────────────────────────────────────
 
-registry = Registry()
 backend = SQLiteBackend.memory()
 config = EnvironmentConfig(
     default="production",
     environments={"production": Environment(name="production")},
 )
-manager = StateManager(registry, backend, config)
+project = Assets(
+    environment="production",
+    backend=backend,
+    env_config=config,
+)
 
 # ──────────────────────────────────────────────────────────────
 # 5. First plan — everything is new
 # ──────────────────────────────────────────────────────────────
 
 print("=== First Plan (initial) ===\n")
-registry.clear()
-load_json_models(registry, models_dir)
-plan = manager.plan(environment="production")
+project.clear()
+load_json_models(project, models_dir)
+plan = project.plan()
 print(plan.show())
 
 # ──────────────────────────────────────────────────────────────
@@ -126,7 +128,7 @@ print(plan.show())
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Apply ===\n")
-result = manager.apply(plan, environment="production")
+result = project.apply(plan)
 print(
     f"Applied: {result.applied} "
     f"(created={result.created}, updated={result.updated}, deleted={result.deleted})"
@@ -137,9 +139,9 @@ print(
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Second Plan (no changes) ===\n")
-registry.clear()
-load_json_models(registry, models_dir)
-plan2 = manager.plan(environment="production")
+project.clear()
+load_json_models(project, models_dir)
+plan2 = project.plan()
 print(plan2.show())
 
 # ──────────────────────────────────────────────────────────────
@@ -199,9 +201,9 @@ print("  - Deleting raw.orders")
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Third Plan (after changes) ===\n")
-registry.clear()
-load_json_models(registry, models_dir)
-plan3 = manager.plan(environment="production")
+project.clear()
+load_json_models(project, models_dir)
+plan3 = project.plan()
 print(plan3.show())
 
 # ──────────────────────────────────────────────────────────────
@@ -209,7 +211,7 @@ print(plan3.show())
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Apply Changes ===\n")
-result3 = manager.apply(plan3, environment="production")
+result3 = project.apply(plan3)
 print(
     f"Applied: {result3.applied} "
     f"(created={result3.created}, updated={result3.updated}, deleted={result3.deleted})"
@@ -220,9 +222,9 @@ print(
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Final Plan (clean) ===\n")
-registry.clear()
-load_json_models(registry, models_dir)
-plan4 = manager.plan(environment="production")
+project.clear()
+load_json_models(project, models_dir)
+plan4 = project.plan()
 print(plan4.show())
 
 # Cleanup

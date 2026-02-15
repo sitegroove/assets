@@ -167,12 +167,12 @@ class TestStateManager:
         manager.apply(plan, environment="production")
 
         # Promote production → staging
-        promote_plan = manager.promote(from_env="production", to_env="staging")
+        promote_plan = manager.promote_to("staging", from_env="production")
         assert promote_plan.has_changes
         manager.apply(promote_plan, environment="staging")
 
         # Promote again — no changes
-        promote_plan2 = manager.promote(from_env="production", to_env="staging")
+        promote_plan2 = manager.promote_to("staging", from_env="production")
         assert not promote_plan2.has_changes
 
     def test_create_environment(self, manager: StateManager):
@@ -227,7 +227,7 @@ class TestStateManager:
 
     def test_promote_missing_source_env(self, manager: StateManager):
         # Source env has no state yet — should return empty plan
-        plan = manager.promote(from_env="production", to_env="staging")
+        plan = manager.promote_to("staging", from_env="production")
         # production has no state, so promote produces empty plan
         assert not plan.has_changes
 
@@ -267,10 +267,10 @@ class TestStateManager:
         )
         manager.backend.save("production", source)
 
-        plan = manager.promote(
-            from_env="production",
-            to_env="staging",
+        plan = manager.promote_to(
+            "staging",
             selector="+mart.enriched",
+            from_env="production",
         )
         selected = {c.asset_id for c in plan.changeset.asset_changes}
         assert selected == {"raw.users", "staging.users", "mart.enriched"}

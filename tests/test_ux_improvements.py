@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from assets import (
     ApplyResult,
     Asset,
@@ -86,6 +88,19 @@ class TestStateManagerCreate:
         _load_json_assets(registry, models)
         plan2 = manager.plan(environment="production")
         assert not plan2.has_changes
+
+    def test_create_allows_configurable_protected_environments(self, tmp_path: Path):
+        registry = Registry()
+        manager = StateManager.create(
+            registry,
+            local_path=str(tmp_path / ".assets_state"),
+            environments={"default": Environment(name="default")},
+            default_env="default",
+            protected_environments={"default"},
+        )
+
+        with pytest.raises(ValueError, match="protected"):
+            manager.destroy_environment("default")
 
 
 class TestReprMethods:
@@ -170,8 +185,6 @@ class TestEnvironmentConfigBehavior:
 
 class TestApplyValidationBehavior:
     def test_apply_empty_plan_validates_environment(self, tmp_path: Path):
-        import pytest
-
         registry = Registry()
         manager = StateManager.create(
             registry,

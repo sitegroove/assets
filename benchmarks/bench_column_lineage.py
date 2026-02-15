@@ -3,6 +3,7 @@
 Modernized to use the assets library's core APIs:
 
 - ``Asset`` with nested children for columns
+- ``Assets`` facade for high-level registration and selection workflows
 - ``JinjaRenderer`` (Demo 09) for ``{{ ref() }}`` template resolution
 - ``ColumnLineageResolver`` (Demo 09) for sqlglot column-level lineage
 - ``Registry`` + ``register_many()`` for batch registration
@@ -41,8 +42,8 @@ from utils import ColumnLineageResolver, JinjaRenderer
 
 from assets import (
     Asset,
+    Assets,
     FieldMapping,
-    GraphSelector,
     Registry,
     SQLiteBackend,
 )
@@ -638,28 +639,27 @@ def bench_registry_graph(
     results: dict[str, dict[str, float]] = {}
 
     # register_many
-    def _register() -> Registry:
-        reg = Registry()
-        reg.register_many(assets)
-        return reg
+    def _register() -> Assets:
+        project = Assets()
+        project.register_many(assets)
+        return project
 
     stats = _timed(_register)
     results["register_many"] = stats
     print(f"  register_many ({n}):              {_fmt(stats)}")
 
-    reg = _register()
+    project = _register()
 
     # Graph build (force rebuild each iteration)
     def _build_graph() -> None:
-        reg._graph = None  # noqa: SLF001
-        _ = reg.graph
+        project.registry._graph = None  # noqa: SLF001
+        _ = project.graph
 
     stats = _timed(_build_graph)
     results["graph_build"] = stats
     print(f"  Graph build:                        {_fmt(stats)}")
 
-    graph = reg.graph
-    selector_engine = GraphSelector(reg)
+    graph = project.graph
 
     # Topological sort
     stats = _timed(lambda: graph.topological_sort())
@@ -699,8 +699,8 @@ def bench_registry_graph(
 
     # Selectors
     for selector in ["type:source", "type:mart", "tag:staging"]:
-        sel_result = selector_engine.execute(selector)
-        stats = _timed(lambda s=selector: selector_engine.execute(s))
+        sel_result = project.select(selector)
+        stats = _timed(lambda s=selector: project.select(s))
         results[f"select_{selector}"] = stats
         print(f"  Select '{selector}' ({len(sel_result.names)}):        {_fmt(stats)}")
 
@@ -929,10 +929,11 @@ def main() -> None:
             break
 
     # ── Step 3: Register in Registry ──
-    registry = Registry()
+    project = Assets()
     t0 = time.perf_counter()
-    registry.register_many(assets)
+    project.register_many(assets)
     register_ms = (time.perf_counter() - t0) * 1000
+    registry = project.registry
     print(f"\n  Registered {len(assets)} assets in {register_ms:.1f}ms")
 
     all_results["generation"] = {

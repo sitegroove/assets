@@ -26,8 +26,14 @@ This document describes the internal architecture of the `assets` library — it
 │  ┌───────────┐  ┌──────────────────────────────────────────────┐ │
 │  │ Selector  │  │              State                           │ │
 │  │           │  │ Models | Environments | Backend (ABC)        │ │
-│  │ Parser    │  │ SQLiteBackend (:memory: | file) | TieredBackend│ │
-│  └───────────┘  └──────────────────────────────────────────────┘ │
+│  │ Graph/    │  │ SQLiteBackend (:memory: | file) | TieredBackend│ │
+│  │ State     │  └──────────────────────────────────────────────┘ │
+│  └───────────┘                                                   │
+│                                                                   │
+│  ┌──────────────────────────────────────────────────────────────┐ │
+│  │ Assets Facade (high-level API)                              │ │
+│  │ register/select/plan/apply/promote_to/load                 │ │
+│  └──────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -40,7 +46,7 @@ Everything in the library builds on these models.
 | File | Key Types | Purpose |
 |---|---|---|
 | `fields.py` | `AssetField()` | Pydantic `Field()` wrapper with `fingerprint` metadata |
-| `asset.py` | `Asset` | Base model: name, kind, tags, sql, metadata, children. Computed `fingerprint` (SHA-256). Child introspection via `get_child()`, `list_children()`, `get_child_at()`. Recursive nesting via `children: list[Asset]` |
+| `asset.py` | `Asset` | Base model: id, type, tags, sql, metadata, children. Computed `fingerprint` (SHA-256). Child introspection via `get_child()`, `list_children()`, `get_child_at()`. Recursive nesting via `children: list[Asset]` |
 | `dependency.py` | `Dependency`, `FieldMapping` | Graph edge (source→target) with type and computed fingerprint. FieldMapping uses path-based `source`/`target` (e.g., `"raw.users/email"`) with `/` separator |
 | `graph.py` | `AssetGraph`, `SelectionResult` | DAG built from assets + dependencies. Traversal (`ancestors`, `descendants`), `topological_sort()`, `roots()`, `leaves()`, `stale()` for topology-aware cascade |
 | `registry.py` | `Registry` | Central store. `register()`, `register_many()`, `unregister()`, `unregister_many()`. Lazy graph. Delegates selector queries and field-level dependency resolution |
@@ -67,7 +73,8 @@ The library never inspects SQL content. Consumers are responsible for setting `d
 
 | File | Key Types | Purpose |
 |---|---|---|
-| `parser.py` | `SelectorParser` | Parse and execute dbt-style selectors against an `AssetGraph` |
+| `parser.py` | `GraphSelector` | Parse and execute dbt-style selectors against a registry graph |
+| `state.py` | `StateSelector` | Adds `state:*` selectors backed by `StateManager.plan()` |
 
 **Supported syntax:**
 
@@ -75,7 +82,7 @@ The library never inspects SQL content. Consumers are responsible for setting `d
 |---|---|---|
 | Exact name | `staging.users` | Single asset |
 | Tag filter | `tag:pii` | All with tag |
-| Kind filter | `kind:data_model` | All with kind |
+| Type filter | `type:data_model` | All with type |
 | Wildcard | `raw.*` | Glob match on name |
 | Upstream | `+staging.users` | Asset + all ancestors |
 | Downstream | `staging.users+` | Asset + all descendants |
@@ -83,7 +90,7 @@ The library never inspects SQL content. Consumers are responsible for setting `d
 | Depth-limited | `staging.users+2` | Descendants up to depth 2 |
 | Intersection | `tag:pii,kind:data_model` | AND of multiple selectors |
 
-The parser uses regex to detect graph traversal patterns (`+name+2`) and delegates traversal to `AssetGraph.ancestors()`/`descendants()` with optional `max_depth`.
+`GraphSelector` uses regex to detect graph traversal patterns (`+name+2`) and delegates traversal to `AssetGraph.ancestors()`/`descendants()` with optional `max_depth`.
 
 ### `assets/index/` — File Change Detection and Indexing
 
@@ -188,7 +195,7 @@ Remote (remote_path — S3/GCS or local dir):
 |---|---|---|
 | `differ.py` | `Differ`, `Change`, `ChangeSet`, `FieldChange` | Fingerprint-first comparison. Deep field-level diff only when fingerprints differ |
 | `planner.py` | `Plan` | Plan model wrapping a ChangeSet. `show()` for pretty-print. `has_changes` property |
-| `manager.py` | `StateManager`, `ApplyResult`, `ResolvedState` | Orchestrator: `plan()`, `apply()`, `drift()`, `promote()`, `create_environment()`, `destroy_environment()` |
+| `manager.py` | `StateManager`, `ApplyResult`, `ResolvedState` | Orchestrator: `plan()`, `apply()`, `drift()`, `promote_to()`, `create_environment()`, `destroy_environment()` |
 
 **Differ algorithm:**
 ```
@@ -204,7 +211,7 @@ For each asset in state but not desired:
 
 **StateManager.plan() flow:**
 ```
-plan(environment, selector)
+plan(selector, environment?)
   1. registry.all() or GraphSelector(registry).execute(selector)  ← desired assets
   2. _resolve_state(env)                  ← walk parent chain for shallow envs
   3. differ.diff(desired, current)        ← fingerprint-first
@@ -216,7 +223,7 @@ The library operates on whatever is currently in the registry.
 
 **StateManager.apply() flow:**
 ```
-apply(plan, environment)
+apply(plan, environment?)
   with backend.lock(env):               ← context manager acquires/releases lock
     1. backend.load(env)                ← get current state
     2. for each change:
@@ -227,9 +234,9 @@ apply(plan, environment)
   return ApplyResult
 ```
 
-**StateManager.promote() flow:**
+**StateManager.promote_to() flow:**
 ```
-promote(from_env, to_env, selector)
+promote_to(to_env, selector, from_env?)
   1. Load source env state
   2. Resolve target env state (with parent chain)
   3. Build desired from source (optionally filtered)

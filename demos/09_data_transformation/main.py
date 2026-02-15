@@ -34,10 +34,7 @@ from pathlib import Path
 import yaml
 
 from assets import (
-    GraphSelector,
-    Registry,
-    SQLiteBackend,
-    StateManager,
+    Assets,
 )
 
 # Add demo directory to sys.path so local imports resolve
@@ -100,12 +97,8 @@ def main() -> None:
     # ── Step 1: Setup ─────────────────────────────────────────────────
     _print_section(1, "Setup: Registry, StateManager, Variables")
 
-    registry = Registry()
-    backend = SQLiteBackend(str(state_dir / "state.db"))
-    manager = StateManager.create(
-        registry,
-        local_path=str(state_dir),
-    )
+    project = Assets(environment="production", state_dir=str(state_dir))
+    registry = project.registry
 
     # Load variables from both roots (module vars first, project wins)
     variables = _load_variables(
@@ -227,9 +220,8 @@ def main() -> None:
         ("+mart_sales_pipeline", "mart_sales_pipeline + all upstream"),
         ("raw_accounts+", "raw_accounts + all downstream"),
     ]
-    selector_engine = GraphSelector(registry)
     for selector, desc in selectors:
-        result = selector_engine.execute(selector)
+        result = project.select(selector)
         print(f"  {selector:40s} -> {sorted(result.names)} ({desc})")
 
     # ── Step 8: Nested asset introspection ────────────────────────────
@@ -283,18 +275,18 @@ def main() -> None:
     # ── Step 10: Plan & apply ─────────────────────────────────────────
     _print_section(10, "Plan & Apply (Production)")
 
-    plan = manager.plan(environment="production")
+    plan = project.plan()
     print(plan.show())
 
     if plan.has_changes:
-        result = manager.apply(plan, environment="production")
+        result = project.apply(plan)
         print(
             f"  Applied: created={result.created}, "
             f"updated={result.updated}, deleted={result.deleted}"
         )
 
     # Verify clean
-    plan2 = manager.plan(environment="production")
+    plan2 = project.plan()
     print(f"\n  Re-plan has changes: {plan2.has_changes}")
 
     # ── Step 11: Impact analysis ──────────────────────────────────────
@@ -340,7 +332,9 @@ def main() -> None:
                 print(f"    - {m.name}: {m.expression} ({m.time_grain})")
 
     # ── Cleanup ───────────────────────────────────────────────────────
-    backend.close()
+    manager = project.manager
+    if manager is not None and hasattr(manager.backend, "close"):
+        manager.backend.close()
     print(f"\n{'=' * 70}")
     print("Demo complete.")
     print("=" * 70)

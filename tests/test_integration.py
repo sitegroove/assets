@@ -233,12 +233,12 @@ class TestFullWorkflow:
         assert not dev_plan.has_changes
 
         # Promote production → staging
-        promote = mgr.promote(from_env="production", to_env="staging")
+        promote = mgr.promote_to("staging", from_env="production")
         assert promote.has_changes
         mgr.apply(promote, environment="staging")
 
         # No more promotion needed
-        promote2 = mgr.promote(from_env="production", to_env="staging")
+        promote2 = mgr.promote_to("staging", from_env="production")
         assert not promote2.has_changes
 
     def test_row_count_not_fingerprinted(self, full_project: Path):

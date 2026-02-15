@@ -20,6 +20,7 @@ from assets.loader.discovery import (
     LoadResult,
     SourceGroup,
 )
+from assets.project import Assets
 from assets.resolver.lineage import DependencyResolver
 from assets.selector.base import Selector
 from assets.selector.parser import GraphSelector, SelectorParser
@@ -38,6 +39,7 @@ __all__ = [
     # Core
     "Asset",
     "AssetField",
+    "Assets",
     "AssetGraph",
     "Dependency",
     "FieldMapping",

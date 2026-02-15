@@ -29,10 +29,8 @@ from pathlib import Path
 from loader import ResourcesLoader
 
 from assets import (
-    FileDiscovery,
-    Registry,
+    Assets,
     SourceGroup,
-    StateManager,
 )
 
 
@@ -43,33 +41,30 @@ def main() -> None:
     state_dir = demo_root / ".assets_state"
     shutil.rmtree(state_dir, ignore_errors=True)
 
-    registry = Registry()
-    manager = StateManager.create(registry, local_path=str(state_dir))
+    project = Assets(environment="production", state_dir=str(state_dir))
 
-    discovery = FileDiscovery(
-        groups=[
-            SourceGroup(
-                name="shared_infra",
-                root=infra_root,
-                directory=infra_root / "resources",
-                patterns=["*.py"],
-                exclude=["__init__.py"],
-                loader=ResourcesLoader(
-                    deps=["infra_models.py", "infra_defaults.py"],
-                ),
+    groups = [
+        SourceGroup(
+            name="shared_infra",
+            root=infra_root,
+            directory=infra_root / "resources",
+            patterns=["*.py"],
+            exclude=["__init__.py"],
+            loader=ResourcesLoader(
+                deps=["infra_models.py", "infra_defaults.py"],
             ),
-            SourceGroup(
-                name="project_resources",
-                root=project_root,
-                directory=project_root / "resources",
-                patterns=["*.py"],
-                exclude=["__init__.py"],
-                loader=ResourcesLoader(
-                    deps=["resource_models.py", "platform_defaults.py"],
-                ),
+        ),
+        SourceGroup(
+            name="project_resources",
+            root=project_root,
+            directory=project_root / "resources",
+            patterns=["*.py"],
+            exclude=["__init__.py"],
+            loader=ResourcesLoader(
+                deps=["resource_models.py", "platform_defaults.py"],
             ),
-        ],
-    )
+        ),
+    ]
 
     print("=" * 70)
     print("Fake Google Cloud Resources (Multi-Root Demo)")
@@ -79,25 +74,25 @@ def main() -> None:
 
     # -- First load --------------------------------------------------------
     print("\n[1] First load (parse all config files from both roots)")
-    result = discovery.load(manager, environment="production")
+    result = project.load(groups)
     print(result.summary())
 
     # -- Plan/apply --------------------------------------------------------
     print("\n[2] Plan/apply")
-    plan = manager.plan(environment="production")
+    plan = project.plan()
     print(plan.show())
-    apply_result = manager.apply(plan, environment="production")
+    apply_result = project.apply(plan)
     print(f"Applied: created={apply_result.created}, updated={apply_result.updated}")
 
     # -- Second load (cache) -----------------------------------------------
     print("\n[3] Second load (cache + state fast path)")
-    registry.clear()
-    result2 = discovery.load(manager, environment="production")
+    project.clear()
+    result2 = project.load(groups)
     print(result2.summary())
 
     # -- Lineage -----------------------------------------------------------
     print("\n[4] Lineage")
-    graph = registry.graph
+    graph = project.graph
     print(f"Roots:  {sorted(graph.roots())}")
     print(f"Leaves: {sorted(graph.leaves())}")
     print(f"Impacted by network change: {sorted(graph.stale({'shared-vpc'}))}")

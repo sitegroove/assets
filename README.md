@@ -22,27 +22,30 @@ pip install assets[cloud]   # S3 + GCS remote state
 ## Quick Start
 
 ```python
-from assets import Asset, AssetField, Registry, StateManager, EnvironmentConfig, Environment
+from assets import Asset, AssetField, Assets
 
 # 1. Define your asset type
 class DataModel(Asset):
     row_count: int = AssetField(default=0, fingerprint=False)
 
-# 2. Register assets
-registry = Registry()
-registry.register(DataModel(name="raw.users", kind="source", tags=["raw"]))
-registry.register(DataModel(
-    name="staging.users",
-    kind="model",
+# 2. Create project + register assets
+project = Assets(state_dir=".assets_state")
+project.register(DataModel(id="raw.users", type="source", tags=["raw"]))
+project.register(DataModel(
+    id="staging.users",
+    type="model",
     sql="SELECT * FROM raw.users",
     depends_on=["raw.users"],
 ))
 
 # 3. Plan and apply
-manager = StateManager.create(registry, local_path=".assets_state")
-plan = manager.plan(environment="production")
+plan = project.plan()
 plan.show()
-result = manager.apply(plan)
+result = project.apply(plan)
+
+# 4. Select
+pii = project.select("tag:pii")
+impacted = project.select("state:modified+")
 ```
 
 ## Import Guidance
@@ -71,6 +74,22 @@ class DataModel(Asset):
 ### AssetField
 
 Wraps Pydantic's `Field()` with a `fingerprint` flag. Fields marked `fingerprint=False` are excluded from change detection — useful for runtime stats like `row_count` or `last_synced_at`.
+
+### Assets (High-Level API)
+
+`Assets` is the high-level facade for day-to-day usage. It wraps `Registry`,
+`StateManager`, and selectors behind one object.
+
+```python
+project = Assets(environment="default", state_dir=".assets_state")
+project.register(asset)
+project.select("tag:pii")
+plan = project.plan()
+project.apply(plan)
+```
+
+If you need lower-level control, use `Registry`, `StateManager`,
+`GraphSelector`, and `StateSelector` directly.
 
 ### Registry
 
@@ -175,7 +194,7 @@ Terraform-style change detection. The library compares what's in the registry ag
 manager = StateManager.create(registry, local_path=".assets_state")
 
 # Detect changes
-plan = manager.plan(environment="production")
+plan = manager.plan()
 plan.show()  # Pretty-print changes
 
 # Apply
@@ -185,7 +204,7 @@ result = manager.apply(plan)
 # After file changes, re-scan and re-plan:
 registry.clear()
 # ... re-load files ...
-plan2 = manager.plan(environment="production")
+plan2 = manager.plan()
 ```
 
 ## Change Detection Layers
@@ -246,17 +265,20 @@ Supports full and shallow environments with parent inheritance:
 manager = StateManager.create(
     registry,
     local_path=".assets_state",
+    default_env="default",
     environments={
+        "default": Environment(name="default"),
         "production": Environment(name="production"),
         "staging": Environment(name="staging", parent="production"),
     },
+    protected_environments={"production", "staging"},
 )
 
 # Create ephemeral dev env
 manager.create_environment("dev-alice", parent="production", shallow=True)
 
 # Promote changes between environments
-promote_plan = manager.promote(from_env="staging", to_env="production")
+promote_plan = manager.promote_to("production", from_env="staging")
 manager.apply(promote_plan)
 
 # Clean up

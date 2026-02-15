@@ -4,7 +4,7 @@
 Run: python demos/01_core_basics/main.py
 """
 
-from assets import Asset, AssetField, GraphSelector, Registry
+from assets import Asset, AssetField, Assets
 
 # ──────────────────────────────────────────────────────────────
 # 1. Define a custom asset type
@@ -27,10 +27,10 @@ class DataModel(Asset):
 # 2. Create and register assets
 # ──────────────────────────────────────────────────────────────
 
-registry = Registry()
+project = Assets()
 
 # Raw source — no SQL, no dependencies
-registry.register(
+project.register(
     DataModel(
         id="raw.users",
         type="source",
@@ -43,7 +43,7 @@ registry.register(
     )
 )
 
-registry.register(
+project.register(
     DataModel(
         id="raw.payments",
         type="source",
@@ -57,7 +57,7 @@ registry.register(
 )
 
 # Staging model — depends on raw.users (consumer sets depends_on explicitly)
-registry.register(
+project.register(
     DataModel(
         id="staging.users",
         type="data_model",
@@ -82,7 +82,7 @@ registry.register(
 )
 
 # Mart model — depends on both staging.users and raw.payments
-registry.register(
+project.register(
     DataModel(
         id="mart.user_spending",
         type="data_model",
@@ -108,7 +108,7 @@ registry.register(
 
 print("=== Fingerprinting ===\n")
 
-user_model = registry.get("raw.users")
+user_model = project.get("raw.users")
 print(f"raw.users fingerprint: {user_model.fingerprint[:16]}...")
 
 # row_count is fingerprint=False — changing it doesn't change the hash
@@ -129,14 +129,14 @@ print(f"Same as original? {m1.fingerprint == m3.fingerprint}")
 
 print("\n=== Dependencies ===\n")
 
-staging_users = registry.get("staging.users")
+staging_users = project.get("staging.users")
 print(f"staging.users depends_on: {staging_users.depends_on}")
 
-mart = registry.get("mart.user_spending")
+mart = project.get("mart.user_spending")
 print(f"mart.user_spending depends_on: {mart.depends_on}")
 
-print(f"\nAll dependencies ({len(registry.dependencies)}):")
-for dep in registry.dependencies:
+print(f"\nAll dependencies ({len(project.registry.dependencies)}):")
+for dep in project.registry.dependencies:
     print(f"  {dep.source} -> {dep.target} (type={dep.type})")
 
 # ──────────────────────────────────────────────────────────────
@@ -145,7 +145,7 @@ for dep in registry.dependencies:
 
 print("\n=== Graph Traversal ===\n")
 
-graph = registry.graph
+graph = project.graph
 print(f"Graph has {len(graph)} assets")
 print(f"Roots (no upstream): {graph.roots()}")
 print(f"Leaves (no downstream): {graph.leaves()}")
@@ -166,34 +166,32 @@ print(f"\nTopological order: {graph.topological_sort()}")
 
 print("\n=== Selectors ===\n")
 
-selector = GraphSelector(registry)
-
 # By tag
-pii = selector.execute("tag:pii")
+pii = project.select("tag:pii")
 print(f"tag:pii -> {pii.names}")
 
 # By kind
-sources = selector.execute("type:source")
+sources = project.select("type:source")
 print(f"type:source -> {sources.names}")
 
 # Wildcard
-raw = selector.execute("raw.*")
+raw = project.select("raw.*")
 print(f"raw.* -> {raw.names}")
 
 # Upstream expansion
-upstream = selector.execute("+mart.user_spending")
+upstream = project.select("+mart.user_spending")
 print(f"+mart.user_spending (asset + all ancestors) -> {upstream.names}")
 
 # Downstream expansion
-downstream = selector.execute("raw.users+")
+downstream = project.select("raw.users+")
 print(f"raw.users+ (asset + all descendants) -> {downstream.names}")
 
 # Depth-limited
-depth1 = selector.execute("raw.users+1")
+depth1 = project.select("raw.users+1")
 print(f"raw.users+1 (descendants depth=1) -> {depth1.names}")
 
 # Intersection
-intersect = selector.execute("tag:pii,type:data_model")
+intersect = project.select("tag:pii,type:data_model")
 print(f"tag:pii,type:data_model (AND) -> {intersect.names}")
 
 # ──────────────────────────────────────────────────────────────
@@ -202,7 +200,7 @@ print(f"tag:pii,type:data_model (AND) -> {intersect.names}")
 
 print("\n=== Nested Asset Introspection ===\n")
 
-staging = registry.get("staging.users")
+staging = project.get("staging.users")
 print(f"staging.users children: {staging.list_children()}")
 
 email_col = staging.get_child("email_clean")

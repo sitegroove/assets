@@ -10,7 +10,7 @@ Run: python demos/05_lineage_resolver/main.py
 
 import re
 
-from assets import Asset, DependencyResolver, FieldMapping, Registry
+from assets import Asset, Assets, DependencyResolver, FieldMapping
 
 # ──────────────────────────────────────────────────────────────
 # 1. Define asset types
@@ -115,9 +115,9 @@ class SimpleDependencyResolver(DependencyResolver):
 # 3. Set up assets
 # ──────────────────────────────────────────────────────────────
 
-registry = Registry()
+project = Assets()
 
-registry.register(
+project.register(
     Asset(
         id="raw.users",
         type="source",
@@ -129,7 +129,7 @@ registry.register(
     )
 )
 
-registry.register(
+project.register(
     Asset(
         id="staging.users",
         type="data_model",
@@ -152,10 +152,10 @@ registry.register(
 
 print("=== Column-Level Dependencies ===\n")
 
-registry.add_resolver("lineage", SimpleDependencyResolver())
+project.add_resolver("lineage", SimpleDependencyResolver())
 
 # Resolve via registry (handles schema building from upstream assets)
-deps = registry.resolve("lineage", asset_id="staging.users")
+deps = project.resolve("lineage", asset_id="staging.users")
 
 print(f"Dependencies for staging.users ({len(deps)} mappings):\n")
 for mapping in deps:
@@ -172,7 +172,7 @@ for mapping in deps:
 
 print("\n=== Key Point: Resolution is On-Demand ===\n")
 print("Column-level resolution NEVER runs during register() or plan().")
-print("The consumer explicitly calls registry.resolve('lineage', ...) when needed:")
+print("The consumer explicitly calls assets.resolve('lineage', ...) when needed:")
 print("  - Catalog UI: user clicks a column")
 print("  - Impact analysis: 'what breaks if I drop this column?'")
 print("  - CI/PR review: resolve only changed models")

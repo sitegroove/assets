@@ -19,8 +19,6 @@ from assets.state.models import AssetState, DependencyState, StateSnapshot
 if TYPE_CHECKING:
     from assets.index.file import FileIndex
 
-PROTECTED_ENVIRONMENTS = {"production", "staging"}
-
 
 class ApplyResult(BaseModel):
     """Result of applying a plan."""
@@ -52,7 +50,7 @@ class StateManager:
     Typical usage::
 
         manager = StateManager.create(registry, local_path=".assets_state")
-        plan = manager.plan(environment="production")
+        plan = manager.plan()
         manager.apply(plan)
     """
 
@@ -61,10 +59,12 @@ class StateManager:
         registry: Registry,
         backend: StateBackend,
         env_config: EnvironmentConfig,
+        environment: str | None = None,
     ) -> None:
         self.registry = registry
         self.backend = backend
         self.env_config = env_config
+        self.environment = self.env_config.get(environment).name
         self._differ = Differ()
         self._index: FileIndex | None = None
 
@@ -75,7 +75,9 @@ class StateManager:
         *,
         local_path: str,
         environments: dict[str, Environment] | None = None,
-        default_env: str = "production",
+        default_env: str = "default",
+        environment: str | None = None,
+        protected_environments: set[str] | None = None,
     ) -> StateManager:
         """Convenience factory for common setups.
 
@@ -83,8 +85,11 @@ class StateManager:
             registry: Registry containing the assets to manage.
             local_path: Directory for the SQLite state database.
             environments: Dict of environments. Defaults to a single
-                production env.
+                default env.
             default_env: Default environment name.
+            environment: Active environment for manager operations.
+                Falls back to ``default_env`` when omitted.
+            protected_environments: Environment names protected from deletion.
         """
         from assets.state.sqlite import SQLiteBackend
 
@@ -96,8 +101,14 @@ class StateManager:
         env_config = EnvironmentConfig(
             default=default_env,
             environments=environments,
+            protected=protected_environments or {"production"},
         )
-        return cls(registry, backend, env_config)
+        return cls(
+            registry,
+            backend,
+            env_config,
+            environment=environment or default_env,
+        )
 
     @property
     def index(self) -> FileIndex:
@@ -140,11 +151,12 @@ class StateManager:
 
     def plan(
         self,
-        environment: str | None = None,
         selector: str | None = None,
+        *,
+        environment: str | None = None,
     ) -> Plan:
         """Detect changes between current registry and applied state."""
-        env = self.env_config.get(environment)
+        env = self.env_config.get(environment or self.environment)
 
         # Get desired assets (optionally filtered by selector)
         if selector:
@@ -164,7 +176,7 @@ class StateManager:
             environment=env.name,
         )
 
-    def apply(self, plan: Plan, environment: str | None = None) -> ApplyResult:
+    def apply(self, plan: Plan, *, environment: str | None = None) -> ApplyResult:
         """Apply a plan to state. Acquires lock, writes changes, releases."""
         env_name = environment or plan.environment
         env = self.env_config.get(env_name)
@@ -221,21 +233,23 @@ class StateManager:
             environment=env_name,
         )
 
-    def drift(self, environment: str | None = None) -> Plan:
+    def drift(self, *, environment: str | None = None) -> Plan:
         """Detect drift: compare state against current registry.
 
         Same as plan() — compares what's in registry vs. what's in state.
         """
         return self.plan(environment=environment)
 
-    def promote(
+    def promote_to(
         self,
-        from_env: str,
         to_env: str,
         selector: str | None = None,
+        *,
+        from_env: str | None = None,
     ) -> Plan:
         """Generate plan to promote changes from one env to another."""
-        source_state = self.backend.load(from_env)
+        source_env = from_env or self.environment
+        source_state = self.backend.load(source_env)
         if source_state is None:
             return Plan(environment=to_env)
 
@@ -277,25 +291,35 @@ class StateManager:
             environment=to_env,
         )
 
+    def promote(
+        self,
+        from_env: str,
+        to_env: str,
+        selector: str | None = None,
+    ) -> Plan:
+        """Backward-compatible promote alias."""
+        return self.promote_to(to_env, selector=selector, from_env=from_env)
+
     def create_environment(
         self,
         name: str,
-        parent: str = "production",
+        parent: str | None = None,
         shallow: bool = True,
     ) -> Environment:
         """Create a new environment."""
-        if parent not in self.env_config.environments:
+        parent_name = parent or self.environment
+        if parent_name not in self.env_config.environments:
             raise ValueError(
-                f"Parent environment '{parent}' does not exist. "
+                f"Parent environment '{parent_name}' does not exist. "
                 f"Available: {sorted(self.env_config.environments.keys())}"
             )
-        env = Environment(name=name, parent=parent, shallow=shallow)
+        env = Environment(name=name, parent=parent_name, shallow=shallow)
         self.env_config.environments[name] = env
         return env
 
     def destroy_environment(self, name: str) -> None:
         """Delete env and state. Protected envs cannot be destroyed."""
-        if name in PROTECTED_ENVIRONMENTS:
+        if name in self.env_config.protected:
             raise ValueError(f"Cannot destroy protected environment '{name}'")
         self.backend.delete_environment(name)
         self.env_config.environments.pop(name, None)

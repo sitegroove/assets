@@ -16,12 +16,12 @@ from pathlib import Path
 
 import pytest
 
+from assets import Assets
 from assets.core.asset import Asset
 from assets.core.dependency import Dependency
 from assets.core.graph import AssetGraph
 from assets.core.registry import Registry
 from assets.engine.differ import Differ
-from assets.selector.parser import GraphSelector
 from assets.state.models import AssetState, StateSnapshot
 from assets.state.sqlite import SQLiteBackend
 
@@ -64,6 +64,14 @@ def registry_10k(assets_10k: tuple[list[Asset], list[Dependency]]) -> Registry:
     registry = Registry()
     registry.register_many(assets)
     return registry
+
+
+@pytest.fixture(scope="module")
+def project_10k(assets_10k: tuple[list[Asset], list[Dependency]]) -> Assets:
+    assets, _ = assets_10k
+    project = Assets()
+    project.register_many(assets)
+    return project
 
 
 # ── Asset.fingerprint ────────────────────────────────────────
@@ -293,11 +301,10 @@ def test_bench_save_incremental_10k(
 
 def test_bench_selector_tag_10k(
     benchmark: pytest.fixture,
-    registry_10k: Registry,
+    project_10k: Assets,
 ) -> None:
     """Select by tag on a 10K-asset graph (indexed O(1) lookup)."""
-    selector = GraphSelector(registry_10k)
-    benchmark(lambda: selector.execute("tag:pii"))
+    benchmark(lambda: project_10k.select("tag:pii"))
 
 
 # ── Topological sort (cached) ────────────────────────────────

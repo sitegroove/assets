@@ -32,10 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from generate import generate_assets
 
+from assets import Assets
 from assets.core.graph import AssetGraph
-from assets.core.registry import Registry
 from assets.engine.differ import Differ
-from assets.selector.parser import GraphSelector
 from assets.state.models import AssetState, StateSnapshot
 from assets.state.sqlite import SQLiteBackend
 
@@ -86,18 +85,18 @@ def run_benchmark(n: int, tmp_dir: Path) -> dict:
     results["generate"] = {"label": "generate", "median_ms": round(gen_ms, 2)}
 
     # 2. Cold load: register_many
-    def do_register() -> Registry:
-        r = Registry()
-        r.register_many(assets)
-        return r
+    def do_register() -> Assets:
+        project = Assets()
+        project.register_many(assets)
+        return project
 
     stats = _timed(do_register, "register_many")
     print(f"  register_many:   {stats['median_ms']:>8.1f}ms")
     results["register_many"] = stats
 
     # Get a populated registry for remaining tests
-    registry = Registry()
-    registry.register_many(assets)
+    project = Assets()
+    project.register_many(assets)
 
     # 3. Graph build
     asset_dict = {a.id: a for a in assets}
@@ -121,8 +120,7 @@ def run_benchmark(n: int, tmp_dir: Path) -> dict:
     results["topo_sort_cached"] = stats
 
     # 5. Selector (indexed)
-    selector = GraphSelector(registry)
-    stats = _timed(lambda: selector.execute("tag:pii"), "select_tag")
+    stats = _timed(lambda: project.select("tag:pii"), "select_tag")
     print(f"  select tag:pii:  {stats['median_ms']:>8.1f}ms")
     results["select_tag"] = stats
 

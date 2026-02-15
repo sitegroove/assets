@@ -23,11 +23,9 @@ import yaml
 
 from assets import (
     Asset,
-    FileDiscovery,
+    Assets,
     LoadedAsset,
-    Registry,
     SourceGroup,
-    StateManager,
 )
 
 # ──────────────────────────────────────────────────────────────
@@ -207,22 +205,19 @@ WHERE p.price > 0
 
 print("=== Loading YAML+SQL Project ===\n")
 
-registry = Registry()
 local_path = Path(tmpdir) / ".state"
-manager = StateManager.create(registry, local_path=str(local_path))
+project = Assets(environment="production", state_dir=str(local_path))
 
-discovery = FileDiscovery(
-    groups=[
-        SourceGroup(
-            name="models",
-            directory=models_dir,
-            patterns=["*.yaml"],
-            loader=YamlSqlLoader(),
-        ),
-    ],
-)
+groups = [
+    SourceGroup(
+        name="models",
+        directory=models_dir,
+        patterns=["*.yaml"],
+        loader=YamlSqlLoader(),
+    ),
+]
 
-result = discovery.load(manager, environment="production")
+result = project.load(groups)
 print(
     f"Loaded: {result.loaded} assets "
     f"(from_state={result.from_state}, parsed={result.parsed})"
@@ -234,7 +229,7 @@ print(
 
 print("\n=== Registered Assets ===\n")
 
-for asset in registry.all():
+for asset in project.all():
     deps = f" -> depends_on: {asset.depends_on}" if asset.depends_on else ""
     sql_info = " (has SQL)" if asset.sql else ""
     print(f"  {asset.id} [type={asset.type}]{sql_info}{deps}")
@@ -245,13 +240,13 @@ for asset in registry.all():
 
 print("\n=== Graph ===\n")
 
-graph = registry.graph
+graph = project.graph
 print(f"Topological order: {graph.topological_sort()}")
 print(f"Roots: {graph.roots()}")
 print(f"Leaves: {graph.leaves()}")
 
 # Check that SQL was merged from companion files
-staging_users = registry.get("staging.users")
+staging_users = project.get("staging.users")
 print(f"\nstaging.users SQL loaded: {'LOWER(TRIM' in staging_users.sql}")
 print(f"staging.users children: {staging_users.list_children()}")
 
@@ -261,10 +256,10 @@ print(f"staging.users children: {staging_users.list_children()}")
 
 print("\n=== Plan/Apply ===\n")
 
-plan = manager.plan(environment="production")
+plan = project.plan()
 print(plan.show())
 
-apply_result = manager.apply(plan, environment="production")
+apply_result = project.apply(plan)
 print(f"\nApplied: created={apply_result.created}")
 
 # ──────────────────────────────────────────────────────────────
@@ -272,8 +267,8 @@ print(f"\nApplied: created={apply_result.created}")
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Second Load (from state) ===\n")
-registry.clear()
-result2 = discovery.load(manager, environment="production")
+project.clear()
+result2 = project.load(groups)
 print(
     f"Loaded: {result2.loaded} "
     f"(from_state={result2.from_state}, parsed={result2.parsed})"
