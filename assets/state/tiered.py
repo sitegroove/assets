@@ -396,11 +396,19 @@ class TieredBackend(StateBackend):
         """Copy state from one environment to another.
 
         Ensures the source is synced locally, copies the local DB
-        file, then pushes the target to remote.
+        file, then pushes the target to remote.  If the source
+        environment has no state, this is a no-op (consistent with
+        ``SQLiteBackend.copy_environment``).
         """
         self._ensure_synced(source)
         self._local.copy_environment(source, target)
-        self.push(target)
+
+        # Only push if the copy actually produced a target DB.
+        # When source doesn't exist, local copy is a no-op and
+        # pushing would create an empty remote environment.
+        target_db = self._local_db_path(target)
+        if target_db.exists():
+            self.push(target)
 
     # ─── Remote locking ────────────────────────────────────
 

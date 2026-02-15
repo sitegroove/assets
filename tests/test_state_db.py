@@ -62,3 +62,40 @@ def test_connect_state_enables_foreign_keys() -> None:
         assert pragma[0] == 1
     finally:
         conn.close()
+
+
+def test_state_metadata_is_singleton() -> None:
+    """Regression: state_metadata must enforce exactly one row.
+
+    The table has a CHECK(id = 1) constraint so only rowid 1 is
+    valid.  Attempting a second insert with a different id must fail.
+    """
+    import sqlite3
+
+    conn = connect_state(":memory:")
+    try:
+        conn.execute(
+            "INSERT INTO state_metadata (id, version, created_at, updated_at) "
+            "VALUES (1, 1, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')"
+        )
+        # Second insert with id=1 should conflict on PK
+        try:
+            conn.execute(
+                "INSERT INTO state_metadata (id, version, created_at, updated_at) "
+                "VALUES (1, 2, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')"
+            )
+            assert False, "Should have raised IntegrityError"
+        except sqlite3.IntegrityError:
+            pass  # expected: PK conflict
+
+        # Insert with id=2 should be rejected by CHECK constraint
+        try:
+            conn.execute(
+                "INSERT INTO state_metadata (id, version, created_at, updated_at) "
+                "VALUES (2, 1, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')"
+            )
+            assert False, "Should have raised IntegrityError"
+        except sqlite3.IntegrityError:
+            pass  # expected: CHECK(id = 1) violation
+    finally:
+        conn.close()

@@ -461,6 +461,31 @@ class TestTieredBackend:
         assert loaded is not None
         assert "a" in loaded.assets
 
+    def test_copy_environment_missing_source_no_remote_artifact(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: copy_environment from missing source must not push.
+
+        Previously, copy_environment() always called push(target)
+        even when the local copy was a no-op (source didn't exist).
+        push() would create an empty state.db via conn() and upload
+        it, leaving an unexpected empty environment on remote.
+        """
+        backend = self._make_backend(tmp_path)
+        backend.copy_environment("nonexistent", "target")
+
+        # No remote files should exist for target
+        remote_dir = tmp_path / "remote"
+        assert not (remote_dir / "target" / "state.db").exists()
+        assert not (remote_dir / "target" / "snapshot.json").exists()
+
+        # load should return None (no state)
+        loaded = backend.load("target")
+        assert loaded is None
+
+        # target should not appear in list_environments
+        assert "target" not in backend.list_environments()
+
 
 # ─── TieredBackend locking edge cases ──────────────────────
 

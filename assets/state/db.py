@@ -21,8 +21,9 @@ logger = logging.getLogger(__name__)
 # ─── State schema (one DB per environment) ─────────────────────────
 
 STATE_SCHEMA = """\
--- ─── State metadata ────────────────────────────────────────
+-- ─── State metadata (singleton row, id always 1) ──────────
 CREATE TABLE IF NOT EXISTS state_metadata (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
     version     INTEGER NOT NULL DEFAULT 1,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,

@@ -121,6 +121,47 @@ class TestSQLiteBackendBasic:
         assert loaded is not None
         assert "x" in loaded.assets
 
+    def test_repeated_saves_keep_single_metadata_row(
+        self, mem_backend: SQLiteBackend
+    ) -> None:
+        """Regression: state_metadata must be a singleton row.
+
+        Previously the table had no primary key, so every save()
+        inserted a new row.  load() used fetchone() and returned the
+        oldest (stale) metadata.
+        """
+        state = StateSnapshot(environment="dev", version=1)
+        mem_backend.save("dev", state)
+        state.version = 2
+        mem_backend.save("dev", state)
+        state.version = 3
+        mem_backend.save("dev", state)
+
+        conn = mem_backend.conn("dev")
+        rows = conn.execute("SELECT * FROM state_metadata").fetchall()
+        assert len(rows) == 1, f"Expected exactly 1 metadata row, got {len(rows)}"
+
+        loaded = mem_backend.load("dev")
+        assert loaded is not None
+        assert loaded.version == 3
+
+    def test_repeated_saves_metadata_on_file_backend(
+        self, file_backend: SQLiteBackend
+    ) -> None:
+        """Same singleton-metadata check for file-backed backend."""
+        state = StateSnapshot(environment="dev", version=1)
+        file_backend.save("dev", state)
+        state.version = 5
+        file_backend.save("dev", state)
+
+        conn = file_backend.conn("dev")
+        rows = conn.execute("SELECT * FROM state_metadata").fetchall()
+        assert len(rows) == 1
+
+        loaded = file_backend.load("dev")
+        assert loaded is not None
+        assert loaded.version == 5
+
 
 # ─── List environments ──────────────────────────────────────
 

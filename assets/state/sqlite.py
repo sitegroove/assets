@@ -185,12 +185,12 @@ class SQLiteBackend(StateBackend):
         """
         c = self.conn(environment)
         with c:
-            # Upsert state metadata (single row)
+            # Upsert state metadata (singleton row, id always 1)
             c.execute(
                 """INSERT INTO state_metadata
-                       (version, created_at, updated_at, metadata)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(rowid) DO UPDATE SET
+                       (id, version, created_at, updated_at, metadata)
+                   VALUES (1, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
                        version = excluded.version,
                        updated_at = excluded.updated_at,
                        metadata = excluded.metadata""",
