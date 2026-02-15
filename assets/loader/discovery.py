@@ -60,7 +60,8 @@ class Loader(Protocol):
                 data = yaml.safe_load(path.read_text())
                 sql_path = path.with_suffix(".sql")
                 deps = [(sql_path, "sql")] if sql_path.exists() else []
-                asset = Asset(id=data["id"], type="model", sql=sql_path.read_text())
+                data["sql"] = sql_path.read_text() if sql_path.exists() else None
+                asset = DataModel.model_validate(data)
                 return [LoadedAsset(asset=asset, deps=deps)]
     """
 

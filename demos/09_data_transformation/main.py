@@ -34,7 +34,7 @@ from pathlib import Path
 import yaml
 
 from assets import (
-    Assets,
+    Project,
 )
 
 # Add demo directory to sys.path so local imports resolve
@@ -97,7 +97,7 @@ def main() -> None:
     # ── Step 1: Setup ─────────────────────────────────────────────────
     _print_section(1, "Setup: Registry, StateManager, Variables")
 
-    project = Assets(environment="production", state_dir=str(state_dir))
+    project = Project(environment="production", state_dir=str(state_dir))
     registry = project.registry
 
     # Load variables from both roots (module vars first, project wins)
@@ -122,7 +122,7 @@ def main() -> None:
 
     print(f"  Registered {len(source_assets)} source tables:")
     for la in source_assets:
-        cols = [c.id for c in la.asset.children]
+        cols = [c.id for c in la.asset.children()]
         print(f"    {la.asset.id} ({la.asset.type}) -> columns: {cols}")
 
     # ── Step 3: Load module models ────────────────────────────────────
@@ -229,13 +229,13 @@ def main() -> None:
 
     stg_accounts = registry.get("stg_accounts")
     if stg_accounts:
-        print(f"  stg_accounts children: {stg_accounts.list_children()}")
+        print(f"  stg_accounts children: {[c.id for c in stg_accounts.children()]}")
 
     # PII scan across all assets
     pii_fields: list[str] = []
     restricted_fields: list[str] = []
     for asset in registry.all():
-        for child in asset.children:
+        for child in asset.children():
             if hasattr(child, "pii") and child.pii:
                 pii_fields.append(f"{asset.id}/{child.id}")
             if (
@@ -261,7 +261,7 @@ def main() -> None:
 
     for target_id in lineage_targets:
         asset = registry.get(target_id)
-        if not asset or not asset.sql:
+        if not asset or not getattr(asset, "sql", None):
             continue
         print(f"\n  {target_id}:")
         mappings = registry.resolve("lineage", asset_id=target_id)

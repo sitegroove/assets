@@ -29,7 +29,7 @@ from pathlib import Path
 from loader import ResourcesLoader
 
 from assets import (
-    Assets,
+    Project,
     SourceGroup,
 )
 
@@ -41,7 +41,7 @@ def main() -> None:
     state_dir = demo_root / ".assets_state"
     shutil.rmtree(state_dir, ignore_errors=True)
 
-    project = Assets(environment="production", state_dir=str(state_dir))
+    project = Project(environment="production", state_dir=str(state_dir))
 
     groups = [
         SourceGroup(

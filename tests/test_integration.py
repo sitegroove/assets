@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from assets import (
     Asset,
+    AssetField,
     Environment,
     EnvironmentConfig,
     GraphSelector,
@@ -16,7 +18,25 @@ from assets import (
     SQLiteBackend,
     StateManager,
 )
-from tests.conftest import DataModel
+
+
+# ── Consumer models for integration tests ────────────────────
+
+
+class Column(Asset):
+    type: str = ""
+
+
+class DataModel(Asset):
+    sql: str | None = None
+    columns: list[Column] = cast(
+        list[Column],
+        AssetField(default_factory=list, children=True),
+    )
+    row_count: int = cast(int, AssetField(default=0, fingerprint=False))
+
+
+# ── Helpers ──────────────────────────────────────────────────
 
 
 def _load_json_assets(
@@ -41,7 +61,7 @@ def full_project(tmp_path: Path) -> Path:
                 "id": "raw.users",
                 "type": "source",
                 "tags": ["raw"],
-                "children": [
+                "columns": [
                     {"id": "user_id", "type": "column"},
                     {"id": "email", "type": "column"},
                 ],
@@ -55,7 +75,7 @@ def full_project(tmp_path: Path) -> Path:
                 "id": "raw.payments",
                 "type": "source",
                 "tags": ["raw"],
-                "children": [
+                "columns": [
                     {"id": "payment_id", "type": "column"},
                     {"id": "user_id", "type": "column"},
                     {"id": "amount", "type": "column"},
@@ -75,7 +95,7 @@ def full_project(tmp_path: Path) -> Path:
                     " FROM raw.users u"
                 ),
                 "depends_on": ["raw.users"],
-                "children": [
+                "columns": [
                     {"id": "user_id", "type": "column"},
                     {"id": "email_clean", "type": "column"},
                 ],
@@ -94,7 +114,7 @@ def full_project(tmp_path: Path) -> Path:
                     " JOIN raw.payments p ON u.user_id = p.user_id"
                 ),
                 "depends_on": ["staging.users", "raw.payments"],
-                "children": [
+                "columns": [
                     {"id": "user_id", "type": "column"},
                     {"id": "email_clean", "type": "column"},
                     {"id": "amount", "type": "column"},
@@ -183,13 +203,14 @@ class TestFullWorkflow:
         asset = registry.get("staging.users")
         assert asset is not None
 
-        # list_children
-        children = asset.list_children()
-        assert "user_id" in children
-        assert "email_clean" in children
+        # children() returns Pydantic objects
+        kids = asset.children()
+        kid_ids = [c.id for c in kids]
+        assert "user_id" in kid_ids
+        assert "email_clean" in kid_ids
 
-        # get_child
-        col = asset.get_child("email_clean")
+        # child() with namespaced path
+        col = asset.child("columns/email_clean")
         assert col is not None
         assert col.type == "column"
 

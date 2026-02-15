@@ -20,11 +20,10 @@ from assets.loader.discovery import (
     LoadResult,
     SourceGroup,
 )
-from assets.project import Assets
+from assets.project import Project
 from assets.resolver.lineage import DependencyResolver
 from assets.selector.base import Selector
 from assets.selector.parser import GraphSelector, SelectorParser
-from assets.selector.state import StateSelector
 from assets.state.backend import StateBackend
 from assets.state.environment import Environment, EnvironmentConfig
 from assets.state.models import (
@@ -39,7 +38,7 @@ __all__ = [
     # Core
     "Asset",
     "AssetField",
-    "Assets",
+    "Project",
     "AssetGraph",
     "Dependency",
     "FieldMapping",
@@ -64,7 +63,6 @@ __all__ = [
     "GraphSelector",
     "Selector",
     "SelectorParser",
-    "StateSelector",
     # State
     "AssetState",
     "DependencyState",

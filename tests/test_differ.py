@@ -1,7 +1,24 @@
 """Tests for the Differ."""
 
-from assets import Asset, Differ
+from __future__ import annotations
+
+from typing import cast
+
+from assets import Asset, AssetField, Differ
 from assets.state.models import AssetState
+
+
+class Column(Asset):
+    type: str = ""
+
+
+class HasColumns(Asset):
+    """Asset subclass with a children field for differ tests."""
+
+    columns: list[Column] = cast(
+        list[Column],
+        AssetField(default_factory=list, children=True),
+    )
 
 
 class TestDiffer:
@@ -107,15 +124,15 @@ class TestDiffer:
         assert actions["deleted"] == "delete"
 
     def test_nested_children_change_detected(self):
-        asset_v1 = Asset(
+        asset_v1 = HasColumns(
             id="test",
-            children=[Asset(id="col1", type="column")],
+            columns=[Column(id="col1", type="column")],
         )
-        asset_v2 = Asset(
+        asset_v2 = HasColumns(
             id="test",
-            children=[
-                Asset(id="col1", type="column"),
-                Asset(id="col2", type="column"),
+            columns=[
+                Column(id="col1", type="column"),
+                Column(id="col2", type="column"),
             ],
         )
         current = {
@@ -129,18 +146,32 @@ class TestDiffer:
         assert len(cs.asset_changes) == 1
         assert cs.asset_changes[0].action == "update"
         fields_changed = {fc.field for fc in cs.asset_changes[0].field_changes}
-        assert "children" in fields_changed
+        assert "columns" in fields_changed
 
     def test_deeply_nested_change_detected(self):
-        child_v1 = Asset(id="sub", type="v1")
-        child_v2 = Asset(id="sub", type="v2")
-        asset_v1 = Asset(
+        """Changing a child's field triggers an update on the parent."""
+
+        class SubColumn(Asset):
+            sub_items: list[Column] = cast(
+                list[Column],
+                AssetField(default_factory=list, children=True),
+            )
+
+        class HasSub(Asset):
+            columns: list[SubColumn] = cast(
+                list[SubColumn],
+                AssetField(default_factory=list, children=True),
+            )
+
+        child_v1 = Column(id="sub", type="v1")
+        child_v2 = Column(id="sub", type="v2")
+        asset_v1 = HasSub(
             id="test",
-            children=[Asset(id="parent", children=[child_v1])],
+            columns=[SubColumn(id="parent", sub_items=[child_v1])],
         )
-        asset_v2 = Asset(
+        asset_v2 = HasSub(
             id="test",
-            children=[Asset(id="parent", children=[child_v2])],
+            columns=[SubColumn(id="parent", sub_items=[child_v2])],
         )
         current = {
             "test": AssetState(

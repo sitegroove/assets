@@ -312,12 +312,21 @@ class Registry:
         return targets
 
     def _build_schema(self, asset: Asset) -> dict[str, list[str]]:
-        """Build upstream schema dict for a target asset."""
+        """Build upstream schema dict for a target asset.
+
+        Values are namespaced paths (``"field_name/child_id"``) so that
+        resolvers can unambiguously identify child assets even when
+        multiple child fields exist on the upstream asset.
+        """
         schema: dict[str, list[str]] = {}
         for dep_name in asset.depends_on:
             dep_asset = self.get(dep_name)
             if dep_asset:
-                schema[dep_name] = dep_asset.list_children()
+                schema[dep_name] = [
+                    f"{field_name}/{child.id}"
+                    for field_name, items in dep_asset._child_fields().items()
+                    for child in items
+                ]
         return schema
 
     def _build_cache_key(self, asset: Asset) -> str:

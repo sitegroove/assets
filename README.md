@@ -1,14 +1,51 @@
 # assets
 
-A declarative, graph-based asset registry powered by Pydantic. Think Terraform for data assets: you declare what exists, the library handles state, diffing, and planning.
+A declarative, graph-based asset registry powered by Pydantic. Think Terraform
+for data assets: you declare what exists, the library handles state, diffing,
+and planning.
+
+## Table of Contents
+
+- [Features](#features)
+- [Alpha Status](#alpha-status)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Core Concepts](#core-concepts)
+  - [Defining Assets](#defining-assets)
+  - [Plan / Apply Workflow](#plan--apply-workflow)
+  - [Selectors](#selectors)
+  - [Environments](#environments)
+  - [File Loading](#file-loading)
+- [Use Cases](#use-cases)
+  - [Data Transformation Platform](#data-transformation-platform)
+  - [Infrastructure as Code](#infrastructure-as-code)
+- [Extension Points](#extension-points)
+- [State Backends](#state-backends)
+- [Advanced Usage](#advanced-usage)
+- [Demos](#demos)
+- [License](#license)
+
+## Features
+
+| Feature | What It Enables |
+|---|---|
+| **Declarative asset definitions** | Define assets as typed Python models with validation, IDE autocomplete, and custom fields. |
+| **Automatic change detection** | Fingerprint-based diffing detects exactly what changed so you can skip unnecessary work. |
+| **Plan/apply workflow** | Preview and review changes before writing state, enabling safe deploy and CI workflows. |
+| **Dependency graph** | Build a DAG from declared relationships for impact analysis and topological execution order. |
+| **Selector query language** | Target specific subsets of assets by tag, type, wildcard, lineage, or change state. |
+| **Multi-environment state** | Isolate development and promotion flows with environment inheritance and protected targets. |
+| **Pluggable file loading** | Bring your own parsing logic for YAML, JSON, Python, TOML, or external sources. |
+| **Drift detection** | Compare current definitions against persisted state to catch unintended configuration drift. |
+| **Column-level lineage hooks** | Add field-level dependency resolution for PII tracing and deep impact analysis. |
+| **Remote state sync** | Share state through S3, GCS, or other fsspec backends while keeping fast local reads. |
 
 ## Alpha Status
 
 This library is in early alpha and currently private. Breaking changes may land
-at any time without prior notice while the API and internals are still
-stabilizing.
+at any time while APIs and internals are still stabilizing.
 
-## Install
+## Installation
 
 ```bash
 pip install assets
@@ -22,207 +59,119 @@ pip install assets[cloud]   # S3 + GCS remote state
 ## Quick Start
 
 ```python
-from assets import Asset, AssetField, Assets
+from assets import Asset, AssetField, Project
 
-# 1. Define your asset type
+
 class DataModel(Asset):
     row_count: int = AssetField(default=0, fingerprint=False)
 
-# 2. Create project + register assets
-project = Assets(state_dir=".assets_state")
-project.register(DataModel(id="raw.users", type="source", tags=["raw"]))
-project.register(DataModel(
-    id="staging.users",
-    type="model",
-    sql="SELECT * FROM raw.users",
-    depends_on=["raw.users"],
-))
 
-# 3. Plan and apply
+project = Project(state_dir=".assets_state")
+
+project.register(
+    DataModel(
+        id="raw.users",
+        type="source",
+        tags=["raw"],
+    )
+)
+
+project.register(
+    DataModel(
+        id="staging.users",
+        type="data_model",
+        depends_on=["raw.users"],
+    )
+)
+
 plan = project.plan()
 plan.show()
 result = project.apply(plan)
 
-# 4. Select
-pii = project.select("tag:pii")
+pii_assets = project.select("tag:pii")
 impacted = project.select("state:modified+")
 ```
 
-## Import Guidance
-
-- Prefer `from assets import ...` for stable day-to-day API usage.
-- Use submodule imports (for example `assets.state.sqlite`) for advanced or
-  backend-specific integration points.
-- If you are building reusable internal wrappers, pin imports to the exact
-  modules you depend on and test against new releases.
-
 ## Core Concepts
 
-### Asset
+### Defining Assets
 
-A Pydantic `BaseModel` with automatic fingerprinting. Every asset has a `name`, optional `kind`, `tags`, `sql`, `description`, `metadata`, and nested `children`.
+Assets are Pydantic models. Subclass `Asset` to add domain-specific fields.
+
+```python
+from assets import Asset, AssetField
+
+
+class Column(Asset):
+    type: str = ""
+    pii: bool = False
+
+
+class DataModel(Asset):
+    row_count: int = AssetField(default=0, fingerprint=False)
+```
+
+Use `AssetField(fingerprint=False)` for operational fields that should not
+trigger change detection.
+
+```python
+m1 = DataModel(id="example", row_count=0)
+m2 = DataModel(id="example", row_count=999_999)
+m1.fingerprint == m2.fingerprint  # True
+```
+
+Assets can also contain nested children for column-level or sub-resource
+modeling.
 
 ```python
 class Column(Asset):
     type: str = ""
     pii: bool = False
 
+
 class DataModel(Asset):
-    row_count: int = AssetField(default=0, fingerprint=False)
+    columns: list[Column] = AssetField(default_factory=list, children=True)
+
+
+project.register(
+    DataModel(
+        id="raw.users",
+        type="source",
+        columns=[
+            Column(id="user_id", type="INTEGER"),
+            Column(id="email", type="VARCHAR", pii=True),
+        ],
+    )
+)
+
+users = project.get("raw.users")
+users.children()
+users.child("columns/email").pii
 ```
 
-### AssetField
+### Plan / Apply Workflow
 
-Wraps Pydantic's `Field()` with a `fingerprint` flag. Fields marked `fingerprint=False` are excluded from change detection — useful for runtime stats like `row_count` or `last_synced_at`.
-
-### Assets (High-Level API)
-
-`Assets` is the high-level facade for day-to-day usage. It wraps `Registry`,
-`StateManager`, and selectors behind one object.
+`plan()` compares your registered assets with persisted state and returns a
+preview of creates, updates, and deletes.
 
 ```python
-project = Assets(environment="default", state_dir=".assets_state")
-project.register(asset)
-project.select("tag:pii")
+project = Project(state_dir=".assets_state")
+
+# ... register assets ...
+
 plan = project.plan()
-project.apply(plan)
+plan.show()
+
+result = project.apply(plan)
+# ApplyResult(created=2, updated=1, deleted=1)
+
+next_plan = project.plan()
+next_plan.has_changes  # False
 ```
 
-If you need lower-level control, use `Registry`, `StateManager`,
-`GraphSelector`, and `StateSelector` directly.
+### Selectors
 
-### Registry
-
-Central store for assets and dependencies. Calling `register()` builds dependency edges from the asset's `depends_on` list and invalidates the lazy graph. Consumers are responsible for setting `depends_on` before registering.
-
-```python
-registry = Registry()
-registry.register(asset)
-
-# Query
-registry.get("staging.users")
-registry.all()
-GraphSelector(registry).execute("tag:pii")
-registry.graph  # lazy AssetGraph
-```
-
-### FileDiscovery + FileIndex
-
-The library provides a fast file scanner (`FileDiscovery`) and a persistent index (`FileIndex`) for efficient change detection across 10,000+ model files. `FileIndex` uses two-tier freshness (mtime fast path, content hash fallback) and tracks per-entry dependencies (companion SQL, Jinja macros, variable files) so that changes to any dependency invalidate only the affected entries.
-
-```python
-from assets import FileDiscovery, FileIndex, SourceGroup
-from assets.state.db import connect_state
-
-# Discover files
-discovery = FileDiscovery(groups=[SourceGroup(directory=Path("models"))])
-result = discovery.discover()
-
-# Classify against index (via StateManager)
-manager = StateManager.create(registry, local_path=".assets_state")
-index = manager.index  # FileIndex, ready to use
-status = index.diff([(f.path, f.mtime_ns) for f in result.files], root)
-
-# Fresh assets: load from state backend (last apply)
-# status.fresh_names → ["raw.users", "staging.users", ...]
-# Stale assets: re-parse from source
-for path in status.stale:
-    data = parse(path)
-    index.put_file(path, root, asset_name=..., fingerprint=...,
-                   deps=[(sql_path, "sql")])
-```
-
-## Consumer-Driven Loading
-
-The library never touches files. Consumers own file discovery, parsing, and indexing — then register assets directly. This is the same pattern as Terraform: `.tf` files declare resources, Terraform handles state.
-
-```python
-from pathlib import Path
-from assets import FileDiscovery, Registry, SourceGroup, StateManager
-
-registry = Registry()
-manager = StateManager.create(registry, local_path=".assets_state")
-index = manager.index  # FileIndex, ready to use
-backend = manager.backend
-root = Path("./models")
-
-# Discover and classify
-discovery = FileDiscovery(groups=[SourceGroup(directory=root)])
-result = discovery.discover()
-status = index.diff([(f.path, f.mtime_ns) for f in result.files], root)
-
-# Fresh entries — load from state backend (last apply)
-snapshot = backend.load("production")
-if snapshot is not None:
-    for _path, asset_name in status.fresh:
-        asset_state = snapshot.assets[asset_name]
-        registry.register(DataModel.model_validate(asset_state.data))
-
-# Stale entries — parse from source and update index
-for path in status.stale:
-    data = parse_file(path)
-    asset = DataModel.model_validate(data)
-    registry.register(asset)
-    index.put_file(path, root, asset_name=asset.name,
-                   fingerprint=asset.fingerprint)
-
-# Handle deletions
-registry.unregister_many([name for _, name in status.deleted])
-```
-
-For YAML + companion SQL files with dependency tracking:
-
-```python
-for path in status.stale:
-    data = yaml.safe_load(path.read_text())
-    sql_path = path.with_suffix(".sql")
-    deps = []
-    if sql_path.exists():
-        data["sql"] = sql_path.read_text().strip()
-        deps.append((sql_path, "sql"))
-    asset = DataModel.model_validate(data)
-    registry.register(asset)
-    index.put_file(path, root, asset_name=asset.name,
-                   fingerprint=asset.fingerprint, deps=deps)
-```
-
-## Plan/Apply Workflow
-
-Terraform-style change detection. The library compares what's in the registry against persisted state to produce a plan.
-
-```python
-manager = StateManager.create(registry, local_path=".assets_state")
-
-# Detect changes
-plan = manager.plan()
-plan.show()  # Pretty-print changes
-
-# Apply
-result = manager.apply(plan)
-# ApplyResult(created=3, updated=1, deleted=0)
-
-# After file changes, re-scan and re-plan:
-registry.clear()
-# ... re-load files ...
-plan2 = manager.plan()
-```
-
-## Change Detection Layers
-
-Each layer filters before the next, from cheapest to most expensive:
-
-| Layer | What it checks | Cost |
-|---|---|---|
-| FileIndex mtime | File modification time | ~1us |
-| FileIndex hash | File content SHA-256 | ~0.1us (cached) |
-| FileIndex deps | Dependency file mtime/hash | ~1us per dep |
-| Asset fingerprint | Fingerprinted fields | ~0.1us |
-| Deep diff | Field-by-field comparison | ~1ms |
-| Field deps (on-demand) | Column-level SQL analysis | ~10ms |
-
-## Selectors
-
-dbt-style query syntax for filtering assets:
+Use selector expressions to query subsets of assets.
 
 | Pattern | Example | Behavior |
 |---|---|---|
@@ -235,99 +184,235 @@ dbt-style query syntax for filtering assets:
 | Both | `+staging.users+` | Ancestors + self + descendants |
 | Depth-limited | `staging.users+2` | Descendants up to depth 2 |
 | Intersection | `tag:pii,type:data_model` | AND of multiple selectors |
-| State modified | `state:modified` | Created + updated + deleted IDs |
-| State created | `state:created` | Only newly created IDs |
-| State updated | `state:updated` | Only updated IDs |
-| State deleted | `state:deleted` | Only deleted IDs |
+| State modified | `state:modified` | Created + updated + deleted ids |
+| State created | `state:created` | Only newly created ids |
+| State updated | `state:updated` | Only updated ids |
+| State deleted | `state:deleted` | Only deleted ids |
 
 ```python
-from assets import GraphSelector, StateSelector
-
-graph_selector = GraphSelector(registry)
-result = graph_selector.execute("tag:pii,type:data_model")
-names = result.names  # set of matching asset ids
-assets = result.assets  # list of matching Asset objects
-
-state_selector = StateSelector(registry, manager)
-impacted = state_selector.execute("state:modified+", environment="production")
+pii = project.select("tag:pii")
+impacted = project.select("state:modified+")
 ```
 
-## Multi-Environment
+### Environments
 
-Supports full and shallow environments with parent inheritance:
+Model development and promotion flows with full and shallow environments.
+
+```python
+from assets import Environment, EnvironmentConfig, Project
+
+
+project = Project(
+    environment="production",
+    state_dir=".assets_state",
+    env_config=EnvironmentConfig(
+        default="production",
+        environments={
+            "production": Environment(name="production"),
+            "staging": Environment(name="staging", parent="production"),
+        },
+    ),
+    protected_environments={"production", "staging"},
+)
+
+project.create_environment("dev-alice", parent="production", shallow=True)
+promote_plan = project.promote_to("staging")
+project.apply(promote_plan)
+```
 
 | Type | What it stores | Use case |
 |---|---|---|
 | Full | Complete state of all assets | production, staging |
-| Shallow | Only assets the developer touched | dev branches, PRs |
+| Shallow | Only assets changed in that environment | dev branches, PRs |
+
+### File Loading
+
+Consumers own parsing logic. The library handles discovery, freshness checks,
+rehydration from state, and registration.
 
 ```python
-manager = StateManager.create(
-    registry,
-    local_path=".assets_state",
-    default_env="default",
-    environments={
-        "default": Environment(name="default"),
-        "production": Environment(name="production"),
-        "staging": Environment(name="staging", parent="production"),
-    },
-    protected_environments={"production", "staging"},
+from pathlib import Path
+
+import yaml
+
+from assets import Asset, LoadedAsset, Project, SourceGroup
+
+
+class DataModel(Asset):
+    pass
+
+
+class YamlLoader:
+    def load(self, path: Path, root: Path) -> list[LoadedAsset]:
+        data = yaml.safe_load(path.read_text())
+        asset = DataModel.model_validate(data)
+        return [LoadedAsset(asset=asset)]
+
+
+project = Project(state_dir=".assets_state")
+result = project.load(
+    [
+        SourceGroup(
+            directory=Path("models"),
+            patterns=["*.yaml"],
+            loader=YamlLoader(),
+        )
+    ]
 )
 
-# Create ephemeral dev env
-manager.create_environment("dev-alice", parent="production", shallow=True)
-
-# Promote changes between environments
-promote_plan = manager.promote_to("production", from_env="staging")
-manager.apply(promote_plan)
-
-# Clean up
-manager.destroy_environment("dev-alice")
+print(result.summary())
 ```
 
-## Column-Level Dependencies
+## Use Cases
 
-On-demand, consumer-implemented. The library provides the `DependencyResolver` abstract base class; consumers implement `resolve()` with their parser (e.g., sqlglot).
+### Data Transformation Platform
+
+Use `assets` as the registry and state engine behind dbt-style analytics
+projects with SQL models, tags, tests, and lineage.
 
 ```python
-from assets import Asset, DependencyResolver, FieldMapping, Registry
+from pathlib import Path
 
-class SqlglotResolver(DependencyResolver):
-    def resolve(self, asset: Asset, schema: dict[str, list[str]]) -> list[FieldMapping]:
-        if not asset.sql:
-            return []
-        # Use sqlglot to trace column dependencies through SQL
-        ...
+from assets import Project, SourceGroup
 
-registry = Registry(resolvers={"lineage": SqlglotResolver()})
-mappings = registry.resolve("lineage", asset_id="mart.revenue")
+
+project = Project(state_dir=".assets_state")
+
+# Load model definitions from multiple roots (project + modules)
+result = project.load(
+    [
+        SourceGroup(
+            directory=Path("project/models"),
+            patterns=["*.yml"],
+            loader=ModelLoader(),
+        ),
+        SourceGroup(
+            directory=Path("modules/models"),
+            patterns=["*.yml"],
+            loader=ModelLoader(),
+        ),
+    ]
+)
+
+build_order = project.graph.topological_sort()
+impact = project.select("raw.users+")
+
+plan = project.plan()
+project.apply(plan)
+```
+
+See `demos/09_data_transformation` for a complete end-to-end example with
+Jinja rendering, refs/sources, and sqlglot lineage hooks.
+
+### Infrastructure as Code
+
+Use typed Python config files to model infrastructure resources and dependency
+graphs for shared and project-specific stacks.
+
+```python
+from pathlib import Path
+
+from assets import Project, SourceGroup
+
+
+project = Project(state_dir=".assets_state")
+
+result = project.load(
+    [
+        SourceGroup(
+            directory=Path("project/resources"),
+            patterns=["*.py"],
+            loader=ResourceLoader(),
+        ),
+        SourceGroup(
+            directory=Path("shared_infra/resources"),
+            patterns=["*.py"],
+            loader=ResourceLoader(),
+        ),
+    ]
+)
+
+roots = project.graph.roots()
+leaves = project.graph.leaves()
+
+plan = project.plan()
+project.apply(plan)
+```
+
+See `demos/08_infra_as_code` for a complete multi-root infrastructure example.
+
+## Extension Points
+
+- **Asset subclasses**: add domain-specific fields, nested children, and
+  fingerprint controls.
+- **Custom loaders**: implement `load(path, root) -> list[LoadedAsset]` for
+  your source format.
+- **Dependency resolvers**: implement `DependencyResolver` for on-demand,
+  field-level lineage.
+- **State backends**: implement `StateBackend` for custom persistence layers.
+
+```python
+from assets import DependencyResolver, FieldMapping
+
+
+class SqlResolver(DependencyResolver):
+    def resolve(self, asset, schema):
+        return [
+            FieldMapping(
+                source="raw.users/email",
+                target="staging.users/email_clean",
+            )
+        ]
+
+
+project.add_resolver("lineage", SqlResolver())
+mappings = project.resolve("lineage", asset_id="staging.users")
 ```
 
 ## State Backends
 
 | Backend | Use case |
 |---|---|
-| `SQLiteBackend` | Default, single-file persistence |
-| `SQLiteBackend(":memory:")` | Testing, ephemeral (same schema/triggers as file) |
-| `TieredBackend` | Local SQLite + remote S3/GCS sync |
+| `SQLiteBackend` | Default, single-file local persistence |
+| `SQLiteBackend.memory()` | In-memory backend for tests and short-lived runs |
+| `TieredBackend` | Local SQLite + remote sync through S3/GCS/other fsspec stores |
 
 ```python
-# SQLite (default via create())
-manager = StateManager.create(registry, local_path=".assets_state")
+from assets import Project, TieredBackend
 
-# In-memory (testing) — same SQL schema and triggers as file-backed
-from assets import SQLiteBackend
-manager = StateManager(registry, SQLiteBackend.memory(), env_config)
 
-# Remote sync (S3/GCS or local directory)
-from assets import TieredBackend
-backend = TieredBackend("s3://my-bucket/state")
-backend = TieredBackend("/mnt/shared/state", local_path=".assets_state")
-manager = StateManager(registry, backend, env_config)
+project = Project(state_dir=".assets_state")
+remote_project = Project(backend=TieredBackend("s3://my-bucket/state"))
 ```
 
-## Extension Points
+## Advanced Usage
 
-- **Asset subclasses** — add any Pydantic fields, use `AssetField(fingerprint=False)` to exclude from change detection, nest children via `children: list[Column]`
-- **Dependency resolvers** — implement `DependencyResolver.resolve()` for SQL, Spark, pandas, etc.
-- **State backends** — implement `StateBackend` for PostgreSQL, Redis, git-backed state, etc.
+`Project` is the recommended facade for day-to-day usage. When needed, you can
+drop down to lower-level control through escape hatches:
+
+```python
+project.registry
+project.manager
+project.graph
+```
+
+For internal architecture, data flow, and low-level APIs, see
+`ARCHITECTURE.md`.
+
+## Demos
+
+| Demo | Description | Complexity |
+|---|---|---|
+| `demos/01_core_basics` | Defining assets, fingerprinting, graph queries, selectors | Beginner |
+| `demos/02_plan_apply_workflow` | Terraform-style plan/apply lifecycle | Beginner |
+| `demos/03_multi_environment` | Shallow dev environments and promotion | Intermediate |
+| `demos/04_custom_loader` | Consumer-driven YAML+SQL loading with `SourceGroup` | Intermediate |
+| `demos/05_lineage_resolver` | Custom field-level dependency resolver | Intermediate |
+| `demos/06_ecommerce_platform` | Full e-commerce analytics architecture | Advanced |
+| `demos/07_terraform_style_python_configs` | Terraform-style Python configuration project | Intermediate |
+| `demos/08_infra_as_code` | Multi-root infrastructure as code workflow | Advanced |
+| `demos/09_data_transformation` | dbt-style data transformation architecture | Advanced |
+
+## License
+
+See `LICENSE`.

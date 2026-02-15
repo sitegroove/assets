@@ -34,16 +34,12 @@ class Column(Asset):
     """A typed column with optional PII flag and classification.
 
     Columns are nested assets — they live inside their parent asset's
-    ``children`` list and participate in column-level lineage.
+    ``columns`` list and participate in column-level lineage.
     """
 
     type: str = "VARCHAR"
     pii: bool = False
     classification: Classification = Classification.INTERNAL
-
-
-# Resolve self-referencing ``children`` forward reference.
-Column.model_rebuild()
 
 
 # ── Supporting BaseModel types ────────────────────────────────────────
@@ -84,14 +80,12 @@ class DataModel(Asset):
 
     Extends ``Asset`` with metrics, tests, ownership, materialisation
     strategy, and freshness SLAs.  Columns are stored in the
-    ``children`` field as nested :class:`Column` assets.
-
-    Overrides ``children`` from ``list[Asset]`` to ``list[Column]``
-    so that Pydantic deserialises child dicts into :class:`Column`
-    instances (preserving ``pii`` and ``classification`` fields).
+    ``columns`` field as nested :class:`Column` assets declared with
+    ``AssetField(children=True)``.
     """
 
-    children: list[Column] = AssetField(default_factory=list)
+    columns: list[Column] = AssetField(default_factory=list, children=True)
+    sql: str | None = None
     metrics: list[Metric] = AssetField(default_factory=list)
     tests: list[Test] = AssetField(default_factory=list)
     owner: Owner | None = AssetField(default=None, fingerprint=False)

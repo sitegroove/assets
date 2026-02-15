@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from generate import generate_assets
 
-from assets import Assets
+from assets import Project
 from assets.core.graph import AssetGraph
 from assets.engine.differ import Differ
 from assets.state.models import AssetState, StateSnapshot
@@ -85,8 +85,8 @@ def run_benchmark(n: int, tmp_dir: Path) -> dict:
     results["generate"] = {"label": "generate", "median_ms": round(gen_ms, 2)}
 
     # 2. Cold load: register_many
-    def do_register() -> Assets:
-        project = Assets()
+    def do_register() -> Project:
+        project = Project()
         project.register_many(assets)
         return project
 
@@ -95,7 +95,7 @@ def run_benchmark(n: int, tmp_dir: Path) -> dict:
     results["register_many"] = stats
 
     # Get a populated registry for remaining tests
-    project = Assets()
+    project = Project()
     project.register_many(assets)
 
     # 3. Graph build

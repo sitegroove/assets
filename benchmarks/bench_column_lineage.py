@@ -3,7 +3,7 @@
 Modernized to use the assets library's core APIs:
 
 - ``Asset`` with nested children for columns
-- ``Assets`` facade for high-level registration and selection workflows
+- ``Project`` facade for high-level registration and selection workflows
 - ``JinjaRenderer`` (Demo 09) for ``{{ ref() }}`` template resolution
 - ``ColumnLineageResolver`` (Demo 09) for sqlglot column-level lineage
 - ``Registry`` + ``register_many()`` for batch registration
@@ -30,7 +30,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 # Ensure the project root and demo utils are importable
 _BENCH_DIR = Path(__file__).resolve().parent
@@ -42,12 +42,26 @@ from utils import ColumnLineageResolver, JinjaRenderer
 
 from assets import (
     Asset,
-    Assets,
+    AssetField,
     FieldMapping,
+    Project,
     Registry,
     SQLiteBackend,
 )
 from assets.state.models import AssetState, DependencyState, StateSnapshot
+
+
+class Column(Asset):
+    type: str = ""
+    description: str = ""
+
+
+class DataAsset(Asset):
+    sql: str | None = None
+    columns: list[Column] = cast(
+        list[Column], AssetField(default_factory=list, children=True)
+    )
+
 
 # ── Configuration ─────────────────────────────────────────────
 DEFAULT_SCALE = 1
@@ -473,7 +487,7 @@ def build_assets(
     specs: list[ModelSpec],
     renderer: JinjaRenderer,
 ) -> list[Asset]:
-    """Create ``Asset`` objects from model specs, rendering Jinja SQL.
+    """Create ``DataAsset`` objects from model specs, rendering Jinja SQL.
 
     Each asset gets:
     - Resolved SQL (via ``JinjaRenderer``)
@@ -490,9 +504,9 @@ def build_assets(
             sql = rendered.sql
             depends_on = rendered.refs
 
-        # Create column children as nested Asset objects
+        # Create column children as nested Column objects
         children = [
-            Asset(
+            Column(
                 id=col_name,
                 type=spec.defined_columns.get(col_name, {}).get("type", "VARCHAR"),
                 description=spec.defined_columns.get(col_name, {}).get(
@@ -502,13 +516,13 @@ def build_assets(
             for col_name in spec.output_columns
         ]
 
-        asset = Asset(
+        asset = DataAsset(
             id=spec.name,
             type=spec.layer,
             description=spec.description,
             sql=sql,
             depends_on=depends_on,
-            children=children,
+            columns=children,
             tags=[spec.layer],
             metadata={"layer": spec.layer},
         )
@@ -589,7 +603,7 @@ def bench_lineage_extraction(
     print(f"{'=' * 70}")
     results: dict[str, dict[str, float]] = {}
 
-    sql_assets = [a for a in registry.all() if a.sql]
+    sql_assets = [a for a in registry.all() if getattr(a, "sql", None)]
     all_lineage: dict[str, list[FieldMapping]] = {}
 
     def _extract_all() -> None:
@@ -605,7 +619,7 @@ def bench_lineage_extraction(
     results["extract_all"] = stats
 
     total_mappings = sum(len(m) for m in all_lineage.values())
-    total_cols = sum(len(a.children) for a in registry.all())
+    total_cols = sum(len(a.children()) for a in registry.all())
     print(f"  Extract all ({len(sql_assets)} SQL models):            {_fmt(stats)}")
     print(f"    -> {total_cols} columns, {total_mappings} lineage edges")
 
@@ -639,8 +653,8 @@ def bench_registry_graph(
     results: dict[str, dict[str, float]] = {}
 
     # register_many
-    def _register() -> Assets:
-        project = Assets()
+    def _register() -> Project:
+        project = Project()
         project.register_many(assets)
         return project
 
@@ -743,8 +757,8 @@ def bench_state_backend(
             fingerprint=asset.fingerprint,
             data={
                 "description": asset.description,
-                "sql": asset.sql,
-                "columns": [c.id for c in asset.children],
+                "sql": getattr(asset, "sql", None),
+                "columns": [c.id for c in asset.children()],
                 "lineage": lineage_data,
             },
             applied_by="benchmark",
@@ -820,7 +834,7 @@ def bench_cache_vs_reparse(
         print(f"    -> {n_assets} assets, {n_lineage} lineage edges from SQLite")
 
     # Re-parse: re-extract all lineage with sqlglot
-    sql_assets = [a for a in registry.all() if a.sql]
+    sql_assets = [a for a in registry.all() if getattr(a, "sql", None)]
 
     def _reparse_all() -> None:
         for asset in sql_assets:
@@ -911,9 +925,9 @@ def main() -> None:
     t0 = time.perf_counter()
     assets = build_assets(specs, renderer)
     build_ms = (time.perf_counter() - t0) * 1000
-    total_cols = sum(len(a.children) for a in assets)
-    sql_count = sum(1 for a in assets if a.sql)
-    refs_count = sum(len(a.depends_on) for a in assets if a.sql)
+    total_cols = sum(len(a.children()) for a in assets)
+    sql_count = sum(1 for a in assets if getattr(a, "sql", None))
+    refs_count = sum(len(a.depends_on) for a in assets if getattr(a, "sql", None))
     print(
         f"  Built in {build_ms:.1f}ms"
         f"  ({total_cols} columns across {len(assets)} assets,"
@@ -922,14 +936,15 @@ def main() -> None:
 
     # Show sample resolved SQL
     for a in assets:
-        if a.type == "mart" and a.sql:
+        sql = getattr(a, "sql", None)
+        if a.type == "mart" and sql:
             print(f"\n  Sample resolved SQL ({a.id}):")
-            for line in a.sql.split("\n"):
+            for line in sql.split("\n"):
                 print(f"    {line}")
             break
 
     # ── Step 3: Register in Registry ──
-    project = Assets()
+    project = Project()
     t0 = time.perf_counter()
     project.register_many(assets)
     register_ms = (time.perf_counter() - t0) * 1000

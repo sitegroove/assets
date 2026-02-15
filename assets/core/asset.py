@@ -1,14 +1,14 @@
-"""Base Asset model with fingerprinting and nested children."""
+"""Base Asset model with fingerprinting and dynamic child discovery."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel, Field, PrivateAttr, computed_field
 
-from assets.core.fields import FINGERPRINT_KEY
+from assets.core.fields import CHILDREN_KEY, FINGERPRINT_KEY
 
 
 def _serialize_value(val: Any) -> Any:
@@ -31,12 +31,40 @@ def _serialize_value(val: Any) -> Any:
     return val
 
 
+def _get_list_inner_type(annotation: Any) -> type | None:
+    """Extract ``T`` from a ``list[T]`` annotation.
+
+    Returns ``None`` when the annotation is not ``list[T]`` or the
+    inner type is not a concrete class.
+    """
+    origin = get_origin(annotation)
+    if origin is list:
+        args = get_args(annotation)
+        if args and isinstance(args[0], type):
+            return args[0]
+    return None
+
+
 class Asset(BaseModel):
     """Base class for all assets in the registry.
 
-    Assets can be nested to any depth via the ``children`` field.
-    Each child is itself an Asset with its own identity, lineage, tags,
-    and metadata — enabling hierarchies like database → schema → table → column.
+    The base class is intentionally minimal and platform-agnostic.
+    Domain-specific fields (``sql``, ``materialized``, ``project_id``,
+    etc.) belong on consumer subclasses.
+
+    **Children** are not a built-in field.  Instead, consumers declare
+    one or more child fields using ``AssetField(children=True)``::
+
+        class DataModel(Asset):
+            columns: list[Column] = AssetField(
+                default_factory=list, children=True,
+            )
+            metrics: list[MetricAsset] = AssetField(
+                default_factory=list, children=True,
+            )
+
+    The framework discovers child fields dynamically and exposes them
+    via :meth:`children`, :meth:`child`, and :meth:`child_at`.
 
     Assets are hashable (by ``id``) so they can be used in sets and
     as dict keys.  Two assets with the same ``id`` hash identically
@@ -53,15 +81,9 @@ class Asset(BaseModel):
     # — graph —
     depends_on: list[str] = Field(default_factory=list)
 
-    # — content —
-    sql: str | None = None
-
     # — classification —
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-    # — nested children —
-    children: list[Asset] = Field(default_factory=list)
 
     # — cached fingerprint (private, excluded from serialisation) —
     # Thread-safety note: the cache write is a single pointer assignment
@@ -124,7 +146,7 @@ class Asset(BaseModel):
         return NotImplemented
 
     def __repr__(self) -> str:
-        children_count = len(self.children)
+        children_count = sum(len(items) for items in self._child_fields().values())
         parts = [f"id={self.id!r}"]
         if self.type:
             parts.append(f"type={self.type!r}")
@@ -134,30 +156,96 @@ class Asset(BaseModel):
 
     # — Child introspection —
 
-    def list_children(self) -> list[str]:
-        """List names of all direct children."""
-        return [child.id for child in self.children]
+    def _child_fields(self) -> dict[str, list[Asset]]:
+        """Return ``{field_name: [asset, ...]}`` for all children fields.
 
-    def get_child(self, name: str) -> Asset | None:
-        """Look up a direct child by name."""
-        return next((c for c in self.children if c.id == name), None)
+        A field is a children field when its ``json_schema_extra``
+        contains ``CHILDREN_KEY: True`` (set via
+        ``AssetField(children=True)``).
+        """
+        result: dict[str, list[Asset]] = {}
+        for attr_name, field_info in self.__class__.model_fields.items():
+            extra = field_info.json_schema_extra or {}
+            if isinstance(extra, dict) and extra.get(CHILDREN_KEY) is True:
+                result[attr_name] = getattr(self, attr_name)
+        return result
 
-    def get_child_at(self, path: str) -> Asset | None:
-        """Look up a nested child by slash-separated path.
+    def children(
+        self,
+        *,
+        child_type: type[Asset] | None = None,
+    ) -> list[Asset]:
+        """All children across every ``AssetField(children=True)`` field.
+
+        Args:
+            child_type: When provided, only return children from fields
+                whose ``list[T]`` annotation has ``T`` equal to (or a
+                subclass of) *child_type*.
+
+        Returns:
+            Flat list of child asset objects.  Order follows field
+            declaration order, then list order within each field.
 
         Example::
 
-            asset.get_child_at("public/users/email")
-            # navigates: self → child "public" → child "users" → child "email"
+            model.children()                        # all children
+            model.children(child_type=Column)        # only Column fields
+            model.children(child_type=MetricAsset)   # only MetricAsset fields
+        """
+        result: list[Asset] = []
+        for attr_name, field_info in self.__class__.model_fields.items():
+            extra = field_info.json_schema_extra or {}
+            if not (isinstance(extra, dict) and extra.get(CHILDREN_KEY) is True):
+                continue
+            if child_type is not None:
+                inner = _get_list_inner_type(field_info.annotation)
+                if inner is None or not issubclass(inner, child_type):
+                    continue
+            result.extend(getattr(self, attr_name))
+        return result
+
+    def child(self, path: str) -> Asset | None:
+        """Look up a direct child by ``field_name/child_id``.
+
+        Args:
+            path: Slash-separated string ``"field_name/child_id"``.
+
+        Returns:
+            The child asset, or ``None`` if not found.
+
+        Example::
+
+            model.child("columns/email")
+            model.child("metrics/revenue")
+        """
+        field_name, _, child_id = path.partition("/")
+        if not child_id:
+            return None
+        children_map = self._child_fields()
+        items = children_map.get(field_name, [])
+        return next((c for c in items if c.id == child_id), None)
+
+    def child_at(self, path: str) -> Asset | None:
+        """Navigate nested children by ``field/id/field/id/...`` path.
+
+        Each pair of segments is ``(field_name, child_id)``.  The path
+        must therefore contain an even number of segments.
+
+        Example::
+
+            model.child_at("columns/email")
+            model.child_at("columns/email/sub_columns/type")
         """
         parts = path.split("/")
+        if len(parts) < 2 or len(parts) % 2 != 0:
+            return None
+        if any(p == "" for p in parts):
+            return None
         current: Asset | None = self
-        for part in parts:
+        for i in range(0, len(parts), 2):
             if current is None:
                 return None
-            current = current.get_child(part)
+            field_name = parts[i]
+            child_id = parts[i + 1]
+            current = current.child(f"{field_name}/{child_id}")
         return current
-
-
-# Resolve the self-referencing forward reference in children: list[Asset]
-Asset.model_rebuild()

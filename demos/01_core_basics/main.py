@@ -4,7 +4,9 @@
 Run: python demos/01_core_basics/main.py
 """
 
-from assets import Asset, AssetField, Assets
+from typing import cast
+
+from assets import Asset, AssetField, Project
 
 # ──────────────────────────────────────────────────────────────
 # 1. Define a custom asset type
@@ -18,16 +20,21 @@ class Column(Asset):
 
 
 class DataModel(Asset):
-    """A data model with a non-fingerprinted row_count."""
+    """A data model with sql, columns, and a non-fingerprinted row_count."""
 
-    row_count: int = AssetField(default=0, fingerprint=False)
+    sql: str | None = None
+    columns: list[Column] = cast(
+        list[Column],
+        AssetField(default_factory=list, children=True),
+    )
+    row_count: int = cast(int, AssetField(default=0, fingerprint=False))
 
 
 # ──────────────────────────────────────────────────────────────
 # 2. Create and register assets
 # ──────────────────────────────────────────────────────────────
 
-project = Assets()
+project = Project()
 
 # Raw source — no SQL, no dependencies
 project.register(
@@ -35,7 +42,7 @@ project.register(
         id="raw.users",
         type="source",
         tags=["raw", "pii"],
-        children=[
+        columns=[
             Column(id="user_id", type="INTEGER"),
             Column(id="email", type="VARCHAR", pii=True),
             Column(id="created_at", type="TIMESTAMP"),
@@ -48,7 +55,7 @@ project.register(
         id="raw.payments",
         type="source",
         tags=["raw", "finance"],
-        children=[
+        columns=[
             Column(id="payment_id", type="INTEGER"),
             Column(id="user_id", type="INTEGER"),
             Column(id="amount", type="DECIMAL"),
@@ -68,7 +75,7 @@ project.register(
             "WHERE u.created_at IS NOT NULL"
         ),
         depends_on=["raw.users"],
-        children=[
+        columns=[
             Column(id="user_id", type="INTEGER"),
             Column(
                 id="email_clean",
@@ -94,7 +101,7 @@ project.register(
             "GROUP BY u.user_id, u.email_clean"
         ),
         depends_on=["staging.users", "raw.payments"],
-        children=[
+        columns=[
             Column(id="user_id", type="INTEGER"),
             Column(id="email_clean", type="VARCHAR"),
             Column(id="total_spent", type="DECIMAL"),
@@ -201,15 +208,16 @@ print(f"tag:pii,type:data_model (AND) -> {intersect.names}")
 print("\n=== Nested Asset Introspection ===\n")
 
 staging = project.get("staging.users")
-print(f"staging.users children: {staging.list_children()}")
+kids = staging.children()
+print(f"staging.users children: {[c.id for c in kids]}")
 
-email_col = staging.get_child("email_clean")
+email_col = staging.child("columns/email_clean")
 print(f"  email_clean.type: {email_col.type}")
 print(f"  email_clean.pii: {email_col.pii}")
 print(f"  email_clean.description: {email_col.description}")
 
 # Child not found
-missing = staging.get_child("nonexistent")
-print(f"  get_child('nonexistent'): {missing}")
+missing = staging.child("columns/nonexistent")
+print(f"  child('columns/nonexistent'): {missing}")
 
 print("\nDone!")

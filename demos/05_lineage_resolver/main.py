@@ -9,8 +9,9 @@ Run: python demos/05_lineage_resolver/main.py
 """
 
 import re
+from typing import cast
 
-from assets import Asset, Assets, DependencyResolver, FieldMapping
+from assets import Asset, AssetField, DependencyResolver, FieldMapping, Project
 
 # ──────────────────────────────────────────────────────────────
 # 1. Define asset types
@@ -19,6 +20,16 @@ from assets import Asset, Assets, DependencyResolver, FieldMapping
 
 class Column(Asset):
     type: str = ""
+
+
+class DataModel(Asset):
+    """Consumer asset with sql and columns."""
+
+    sql: str | None = None
+    columns: list[Column] = cast(
+        list[Column],
+        AssetField(default_factory=list, children=True),
+    )
 
 
 # ──────────────────────────────────────────────────────────────
@@ -35,16 +46,17 @@ class SimpleDependencyResolver(DependencyResolver):
 
     def resolve(self, asset: Asset, schema: dict[str, list[str]]) -> list[FieldMapping]:
         mappings: list[FieldMapping] = []
-        if not asset.sql:
+        sql = getattr(asset, "sql", None)
+        if not sql:
             return mappings
 
-        sql = asset.sql
-
-        # Build reverse lookup: column_name -> table_name
-        col_to_table: dict[str, str] = {}
+        # Build reverse lookup: column_name -> "table/field/col"
+        col_to_source: dict[str, str] = {}
         for table, children in schema.items():
-            for col in children:
-                col_to_table[col] = table
+            for namespaced_col in children:
+                # namespaced_col is "columns/col_name"
+                _, _, col_name = namespaced_col.partition("/")
+                col_to_source[col_name] = f"{table}/{namespaced_col}"
 
         # Find SELECT ... AS target_col patterns
         select_match = re.search(
@@ -74,8 +86,8 @@ class SimpleDependencyResolver(DependencyResolver):
                 if source_table and target_col:
                     mappings.append(
                         FieldMapping(
-                            source=f"{source_table}/{source_col}",
-                            target=f"<target>/{target_col}",
+                            source=f"{source_table}/columns/{source_col}",
+                            target=f"<target>/columns/{target_col}",
                             transform=f"{transform_name}({source_col})",
                         )
                     )
@@ -91,8 +103,8 @@ class SimpleDependencyResolver(DependencyResolver):
                 if source_table:
                     mappings.append(
                         FieldMapping(
-                            source=f"{source_table}/{source_col}",
-                            target=f"<target>/{output_col}",
+                            source=f"{source_table}/columns/{source_col}",
+                            target=f"<target>/columns/{output_col}",
                         )
                     )
 
@@ -115,13 +127,13 @@ class SimpleDependencyResolver(DependencyResolver):
 # 3. Set up assets
 # ──────────────────────────────────────────────────────────────
 
-project = Assets()
+project = Project()
 
 project.register(
-    Asset(
+    DataModel(
         id="raw.users",
         type="source",
-        children=[
+        columns=[
             Column(id="user_id", type="INTEGER"),
             Column(id="email", type="VARCHAR"),
             Column(id="created_at", type="TIMESTAMP"),
@@ -130,7 +142,7 @@ project.register(
 )
 
 project.register(
-    Asset(
+    DataModel(
         id="staging.users",
         type="data_model",
         sql=(
@@ -138,7 +150,7 @@ project.register(
             "FROM raw.users u"
         ),
         depends_on=["raw.users"],
-        children=[
+        columns=[
             Column(id="user_id", type="INTEGER"),
             Column(id="email_clean", type="VARCHAR"),
             Column(id="created_at", type="TIMESTAMP"),

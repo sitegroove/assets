@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from assets import Asset, AssetField, Registry
@@ -14,7 +16,12 @@ class Column(Asset):
 
 
 class DataModel(Asset):
-    row_count: int = AssetField(default=0, fingerprint=False)
+    sql: str | None = None
+    columns: list[Column] = cast(
+        list[Column],
+        AssetField(default_factory=list, children=True),
+    )
+    row_count: int = cast(int, AssetField(default=0, fingerprint=False))
 
 
 @pytest.fixture
@@ -25,23 +32,23 @@ def registry() -> Registry:
 @pytest.fixture
 def sample_assets() -> list[Asset]:
     return [
-        Asset(id="raw.users", type="source", tags=["raw"]),
-        Asset(
+        DataModel(id="raw.users", type="source", tags=["raw"]),
+        DataModel(
             id="staging.users",
             type="data_model",
             tags=["staging", "pii"],
             sql="SELECT * FROM raw.users",
             depends_on=["raw.users"],
         ),
-        Asset(
+        DataModel(
             id="staging.payments",
             type="data_model",
             tags=["staging"],
             sql="SELECT * FROM raw.payments",
             depends_on=["raw.payments"],
         ),
-        Asset(id="raw.payments", type="source", tags=["raw"]),
-        Asset(
+        DataModel(id="raw.payments", type="source", tags=["raw"]),
+        DataModel(
             id="mart.enriched",
             type="data_model",
             tags=["mart"],

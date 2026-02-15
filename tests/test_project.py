@@ -1,10 +1,16 @@
-"""Tests for high-level Assets facade."""
+"""Tests for high-level Project facade."""
 
 from __future__ import annotations
 
 import pytest
 
-from assets import Asset, Assets, DependencyResolver, FieldMapping, SQLiteBackend
+from assets import Asset, DependencyResolver, FieldMapping, Project, SQLiteBackend
+
+
+class DataModel(Asset):
+    """Subclass with sql for project tests."""
+
+    sql: str | None = None
 
 
 class PassthroughResolver(DependencyResolver):
@@ -28,13 +34,13 @@ class PassthroughResolver(DependencyResolver):
 class TestAssetsFacade:
     def test_constructor_validation(self, tmp_path) -> None:
         with pytest.raises(ValueError, match="Provide only one"):
-            Assets(
+            Project(
                 state_dir=str(tmp_path / ".assets_state"),
                 backend=SQLiteBackend.memory(),
             )
 
     def test_registry_only_mode(self) -> None:
-        project = Assets()
+        project = Project()
         project.register(Asset(id="raw.users", type="source", tags=["raw"]))
 
         result = project.select("tag:raw")
@@ -45,11 +51,13 @@ class TestAssetsFacade:
         with pytest.raises(RuntimeError, match="No state backend configured"):
             project.plan()
 
-        with pytest.raises(RuntimeError, match="No state backend configured"):
-            project.select("state:modified")
+        # state: selectors without a manager return empty with a warning
+        result = project.select("state:modified")
+        assert result.names == set()
+        assert any("requires a StateManager" in w for w in result.warnings)
 
     def test_plan_apply_with_default_environment(self, tmp_path) -> None:
-        project = Assets(state_dir=str(tmp_path / ".assets_state"))
+        project = Project(state_dir=str(tmp_path / ".assets_state"))
         project.register(Asset(id="raw.users", type="source", tags=["raw"]))
 
         plan = project.plan()
@@ -79,7 +87,7 @@ class TestAssetsFacade:
             environments={"default": Environment(name="default")},
             protected={"production"},
         )
-        project = Assets(
+        project = Project(
             state_dir=str(tmp_path / ".assets_state"),
             env_config=env_config,
             protected_environments={"default"},
@@ -89,11 +97,11 @@ class TestAssetsFacade:
         assert "state_enabled=True" in repr(project)
 
     def test_select_state_uses_active_environment(self, tmp_path) -> None:
-        project = Assets(state_dir=str(tmp_path / ".assets_state"))
+        project = Project(state_dir=str(tmp_path / ".assets_state"))
         project.register_many(
             [
                 Asset(id="raw.users", type="source", tags=["raw"]),
-                Asset(
+                DataModel(
                     id="staging.users",
                     type="data_model",
                     tags=["staging", "pii"],
@@ -108,7 +116,7 @@ class TestAssetsFacade:
         project.register_many(
             [
                 Asset(id="raw.users", type="source", tags=["raw"]),
-                Asset(
+                DataModel(
                     id="staging.users",
                     type="data_model",
                     tags=["staging", "pii"],
@@ -125,7 +133,7 @@ class TestAssetsFacade:
         assert modified_and_pii.names == {"staging.users"}
 
     def test_promote_to_uses_active_environment(self, tmp_path) -> None:
-        project = Assets(
+        project = Project(
             environment="production",
             state_dir=str(tmp_path / ".assets_state"),
         )
@@ -140,7 +148,7 @@ class TestAssetsFacade:
         assert not drift.has_changes
 
     def test_protected_environments_are_configurable(self, tmp_path) -> None:
-        project = Assets(
+        project = Project(
             state_dir=str(tmp_path / ".assets_state"),
             protected_environments={"default", "production"},
         )
@@ -151,7 +159,7 @@ class TestAssetsFacade:
             project.destroy_environment("default")
 
     def test_resolver_export_and_load_wrappers(self, tmp_path) -> None:
-        project = Assets(state_dir=str(tmp_path / ".assets_state"))
+        project = Project(state_dir=str(tmp_path / ".assets_state"))
         project.register_many(
             [
                 Asset(id="raw.users", type="source", tags=["raw"]),

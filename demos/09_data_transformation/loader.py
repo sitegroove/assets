@@ -93,7 +93,7 @@ class SourceLoader:
                 "description": table.get("description", source_desc),
                 "materialized": "table",
                 "tags": table.get("tags", []),
-                "children": children,
+                "columns": children,
             }
 
             # Owner info from source level

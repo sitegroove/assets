@@ -23,8 +23,9 @@ import yaml
 
 from assets import (
     Asset,
-    Assets,
+    AssetField,
     LoadedAsset,
+    Project,
     SourceGroup,
 )
 
@@ -33,8 +34,14 @@ from assets import (
 # ──────────────────────────────────────────────────────────────
 
 
+class Column(Asset):
+    type: str = ""
+    description: str = ""
+
+
 class DataModel(Asset):
-    pass
+    sql: str | None = None
+    columns: list[Column] = AssetField(default_factory=list, children=True)  # type: ignore[assignment]
 
 
 # ──────────────────────────────────────────────────────────────
@@ -117,7 +124,7 @@ print(f"Project directory: {tmpdir}\n")
             "id": "raw.users",
             "type": "source",
             "tags": ["raw", "pii"],
-            "children": [
+            "columns": [
                 {"id": "user_id", "type": "column"},
                 {"id": "email", "type": "column"},
                 {"id": "created_at", "type": "column"},
@@ -133,7 +140,7 @@ print(f"Project directory: {tmpdir}\n")
             "id": "raw.products",
             "type": "source",
             "tags": ["raw"],
-            "children": [
+            "columns": [
                 {"id": "product_id", "type": "column"},
                 {"id": "name", "type": "column"},
                 {"id": "price", "type": "column"},
@@ -150,7 +157,7 @@ print(f"Project directory: {tmpdir}\n")
             "type": "data_model",
             "description": "Cleaned and validated user data",
             "tags": ["staging", "pii"],
-            "children": [
+            "columns": [
                 {"id": "user_id", "type": "column"},
                 {
                     "id": "email_clean",
@@ -181,7 +188,7 @@ WHERE u.email IS NOT NULL
             "id": "mart.catalog",
             "type": "data_model",
             "tags": ["mart"],
-            "children": [
+            "columns": [
                 {"id": "product_id", "type": "column"},
                 {"id": "name", "type": "column"},
                 {"id": "price", "type": "column"},
@@ -206,7 +213,7 @@ WHERE p.price > 0
 print("=== Loading YAML+SQL Project ===\n")
 
 local_path = Path(tmpdir) / ".state"
-project = Assets(environment="production", state_dir=str(local_path))
+project = Project(environment="production", state_dir=str(local_path))
 
 groups = [
     SourceGroup(
@@ -231,7 +238,7 @@ print("\n=== Registered Assets ===\n")
 
 for asset in project.all():
     deps = f" -> depends_on: {asset.depends_on}" if asset.depends_on else ""
-    sql_info = " (has SQL)" if asset.sql else ""
+    sql_info = " (has SQL)" if getattr(asset, "sql", None) else ""
     print(f"  {asset.id} [type={asset.type}]{sql_info}{deps}")
 
 # ──────────────────────────────────────────────────────────────
@@ -247,8 +254,10 @@ print(f"Leaves: {graph.leaves()}")
 
 # Check that SQL was merged from companion files
 staging_users = project.get("staging.users")
-print(f"\nstaging.users SQL loaded: {'LOWER(TRIM' in staging_users.sql}")
-print(f"staging.users children: {staging_users.list_children()}")
+print(
+    f"\nstaging.users SQL loaded: {'LOWER(TRIM' in getattr(staging_users, 'sql', '')}"
+)
+print(f"staging.users children: {[c.id for c in staging_users.children()]}")
 
 # ──────────────────────────────────────────────────────────────
 # 7. Plan/Apply — persists to SQLite state

@@ -1,4 +1,4 @@
-"""Tests for state-aware selectors."""
+"""Tests for state-aware selectors (built into GraphSelector)."""
 
 from __future__ import annotations
 
@@ -6,11 +6,17 @@ from assets import (
     Asset,
     Environment,
     EnvironmentConfig,
+    GraphSelector,
     Registry,
     SQLiteBackend,
     StateManager,
-    StateSelector,
 )
+
+
+class DataModel(Asset):
+    """Subclass with sql for state-selector tests."""
+
+    sql: str | None = None
 
 
 def _build_manager() -> tuple[Registry, StateManager]:
@@ -31,14 +37,14 @@ def _register_baseline(registry: Registry) -> None:
     registry.register_many(
         [
             Asset(id="raw.users", type="source", tags=["raw"]),
-            Asset(
+            DataModel(
                 id="staging.users",
                 type="data_model",
                 tags=["staging", "pii"],
                 sql="SELECT * FROM raw.users",
                 depends_on=["raw.users"],
             ),
-            Asset(
+            DataModel(
                 id="mart.users",
                 type="data_model",
                 tags=["mart"],
@@ -55,14 +61,14 @@ def _register_changed(registry: Registry) -> None:
     registry.register_many(
         [
             Asset(id="raw.users", type="source", tags=["raw"]),
-            Asset(
+            DataModel(
                 id="staging.users",
                 type="data_model",
                 tags=["staging", "pii"],
                 sql="SELECT user_id FROM raw.users",
                 depends_on=["raw.users"],
             ),
-            Asset(
+            DataModel(
                 id="mart.users",
                 type="data_model",
                 tags=["mart"],
@@ -77,7 +83,7 @@ def _register_changed(registry: Registry) -> None:
 class TestStateSelectors:
     def test_empty_selector_returns_warning(self) -> None:
         registry, manager = _build_manager()
-        selector = StateSelector(registry, manager)
+        selector = GraphSelector(registry, manager=manager)
 
         result = selector.execute("")
         assert result.names == set()
@@ -89,7 +95,7 @@ class TestStateSelectors:
         manager.apply(manager.plan(environment="production"), environment="production")
 
         _register_changed(registry)
-        selector = StateSelector(registry, manager)
+        selector = GraphSelector(registry, manager=manager)
 
         modified = selector.execute("state:modified", environment="production")
         created = selector.execute("state:created", environment="production")
@@ -107,7 +113,7 @@ class TestStateSelectors:
         manager.apply(manager.plan(environment="production"), environment="production")
 
         _register_changed(registry)
-        selector = StateSelector(registry, manager)
+        selector = GraphSelector(registry, manager=manager)
 
         downstream = selector.execute("state:modified+", environment="production")
         upstream = selector.execute("+state:modified", environment="production")
@@ -131,7 +137,7 @@ class TestStateSelectors:
         manager.apply(manager.plan(environment="production"), environment="production")
 
         _register_changed(registry)
-        selector = StateSelector(registry, manager)
+        selector = GraphSelector(registry, manager=manager)
 
         result = selector.execute("state:modified,tag:pii", environment="production")
         assert result.names == {"staging.users"}
@@ -140,7 +146,7 @@ class TestStateSelectors:
         registry, _manager = _build_manager()
         _register_changed(registry)
 
-        selector = StateSelector(registry)
+        selector = GraphSelector(registry)
         result = selector.execute("state:modified")
 
         assert result.names == set()
@@ -150,7 +156,7 @@ class TestStateSelectors:
         registry, manager = _build_manager()
         _register_changed(registry)
 
-        selector = StateSelector(registry, manager)
+        selector = GraphSelector(registry, manager=manager)
         result = selector.execute("state:unknown", environment="production")
 
         assert result.names == set()
@@ -160,7 +166,7 @@ class TestStateSelectors:
         registry, manager = _build_manager()
         _register_changed(registry)
 
-        selector = StateSelector(registry, manager)
+        selector = GraphSelector(registry, manager=manager)
         result = selector.execute("state:", environment="production")
 
         assert result.names == set()
@@ -170,7 +176,7 @@ class TestStateSelectors:
         registry, manager = _build_manager()
         _register_changed(registry)
 
-        selector = StateSelector(registry, manager)
+        selector = GraphSelector(registry, manager=manager)
         result = selector.execute("state:modified+abc", environment="production")
 
         assert result.names == set()
@@ -181,7 +187,7 @@ class TestStateSelectors:
         _register_baseline(registry)
         manager.apply(manager.plan(environment="production"), environment="production")
 
-        selector = StateSelector(registry, manager)
+        selector = GraphSelector(registry, manager=manager)
         result = selector.execute("state:modified", environment="production")
 
         assert result.names == set()
@@ -192,7 +198,7 @@ class TestStateSelectors:
         manager.apply(manager.plan(environment="production"), environment="production")
         _register_changed(registry)
 
-        selector = StateSelector(registry, manager)
+        selector = GraphSelector(registry, manager=manager)
         result = selector.execute("state:modified,", environment="production")
 
         assert result.names == set()
@@ -200,7 +206,7 @@ class TestStateSelectors:
 
     def test_state_selector_invalid_state_syntax_internal(self) -> None:
         registry, manager = _build_manager()
-        selector = StateSelector(registry, manager)
+        selector = GraphSelector(registry, manager=manager)
 
         names, warnings = selector._resolve_state_term("state:modified\n+", plan=None)
 
@@ -208,16 +214,13 @@ class TestStateSelectors:
         assert any("Invalid selector syntax" in w for w in warnings)
 
     def test_is_state_term_false_for_empty_string(self) -> None:
-        registry, manager = _build_manager()
-        selector = StateSelector(registry, manager)
-
-        assert selector._is_state_term("") is False
+        assert GraphSelector._is_state_term("") is False
 
     def test_state_selector_delegates_non_state_terms(self) -> None:
         registry, manager = _build_manager()
         _register_changed(registry)
 
-        selector = StateSelector(registry, manager)
+        selector = GraphSelector(registry, manager=manager)
         result = selector.execute("tag:pii")
 
         assert result.names == {"staging.users"}

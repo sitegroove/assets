@@ -24,20 +24,21 @@ class DependencyResolver(ABC):
 
     Consumers subclass this and implement ``resolve()`` with their own
     parsing logic.  The resolver receives the full :class:`Asset` object
-    so it can read whichever fields it needs (``sql``, ``metadata``,
-    ``children``, etc.).
+    (which may be a consumer subclass) so it can read whichever
+    consumer-defined fields it needs.
 
     Example::
 
         class ColumnLineageResolver(DependencyResolver):
             def resolve(self, asset, schema):
-                if not asset.sql:
+                sql = getattr(asset, "sql", None)
+                if not sql:
                     return []
                 # ... use sqlglot to trace columns ...
 
         class MetricsResolver(DependencyResolver):
             def resolve(self, asset, schema):
-                # ... read asset.metadata["metrics"] ...
+                # ... read consumer-defined fields ...
     """
 
     @abstractmethod
@@ -46,14 +47,16 @@ class DependencyResolver(ABC):
 
         Args:
             asset: The target asset to resolve dependencies for.
-                Resolvers read whichever fields they need (``sql``,
-                ``metadata``, ``children``, etc.).
-            schema: ``{upstream_asset_id: [child_id, ...]}`` for each
-                upstream asset referenced in ``asset.depends_on``.
+                Resolvers read whichever consumer-defined fields they
+                need (the base Asset carries only identity, graph,
+                and classification fields).
+            schema: ``{upstream_asset_id: [field/child_id, ...]}``
+                for each upstream asset in ``asset.depends_on``.
+                Values are namespaced paths (``"field_name/child_id"``).
 
         Returns:
             List of FieldMapping entries with path-based source/target
-            (e.g., ``source="raw.users/email"``,
-            ``target="staging.users/email_clean"``).
+            (e.g., ``source="raw.users/columns/email"``,
+            ``target="staging.users/columns/email_clean"``).
         """
         ...

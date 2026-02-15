@@ -13,13 +13,12 @@ from assets.engine.planner import Plan
 from assets.loader.discovery import FileDiscovery, LoadResult, SourceGroup
 from assets.resolver.lineage import DependencyResolver
 from assets.selector.parser import GraphSelector
-from assets.selector.state import StateSelector
 from assets.state.backend import StateBackend
 from assets.state.environment import Environment, EnvironmentConfig
 from assets.state.sqlite import SQLiteBackend
 
 
-class Assets:
+class Project:
     """High-level facade for registry, selectors, and state operations."""
 
     def __init__(
@@ -101,14 +100,10 @@ class Assets:
         self._registry.clear()
 
     def select(self, selector: str) -> SelectionResult:
-        """Execute a graph or state selector expression."""
-        if "state:" in selector:
-            manager = self._require_manager()
-            return StateSelector(self._registry, manager).execute(
-                selector,
-                environment=self.environment,
-            )
-        return GraphSelector(self._registry).execute(selector)
+        """Execute a selector expression (graph, state, or combined)."""
+        return GraphSelector(self._registry, manager=self._manager).execute(
+            selector, environment=self.environment
+        )
 
     def add_resolver(self, name: str, resolver: DependencyResolver) -> None:
         """Register a named dependency resolver."""
@@ -175,7 +170,7 @@ class Assets:
     def _require_manager(self) -> StateManager:
         if self._manager is None:
             raise RuntimeError(
-                "No state backend configured. Pass state_dir= or backend= to Assets()."
+                "No state backend configured. Pass state_dir= or backend= to Project()."
             )
         return self._manager
 
@@ -187,6 +182,6 @@ class Assets:
 
     def __repr__(self) -> str:
         return (
-            f"Assets(environment={self.environment!r}, assets={len(self)}, "
+            f"Project(environment={self.environment!r}, assets={len(self)}, "
             f"state_enabled={self._manager is not None})"
         )

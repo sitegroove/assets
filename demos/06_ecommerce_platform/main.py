@@ -42,11 +42,11 @@ from pydantic import BaseModel
 from assets import (
     Asset,
     AssetField,
-    Assets,
     DependencyResolver,
     Environment,
     EnvironmentConfig,
     FieldMapping,
+    Project,
     Registry,
     SQLiteBackend,
 )
@@ -69,7 +69,7 @@ class Column(Asset):
     """A typed column with optional PII flag and classification.
 
     Columns are nested assets — they live inside their parent asset's
-    ``children`` list and can participate in lineage at any depth.
+    ``columns`` list and can participate in lineage at any depth.
     """
 
     type: str = "VARCHAR"
@@ -110,10 +110,16 @@ class Owner(BaseModel):
 class DataModel(Asset):
     """The consumer's main asset type — an analytical data model.
 
-    Extends the base Asset with metrics, tests, owner info,
-    freshness SLAs, and materialization strategy. Columns are
-    stored as nested Asset children (inherited ``children`` field).
+    Extends the base Asset with columns, SQL, metrics, tests, owner
+    info, freshness SLAs, and materialization strategy. Columns are
+    stored in the ``columns`` field marked with ``children=True``.
     """
+
+    # Columns — child assets
+    columns: list[Column] = AssetField(default_factory=list, children=True)
+
+    # SQL definition
+    sql: str | None = None
 
     # Metrics — only relevant for mart models
     metrics: list[Metric] = AssetField(default_factory=list)
@@ -204,16 +210,22 @@ class SqlglotDependencyResolver(DependencyResolver):
     """
 
     def resolve(self, asset: Asset, schema: dict[str, list[str]]) -> list[FieldMapping]:
-        if not HAS_SQLGLOT or not asset.sql:
+        sql = getattr(asset, "sql", None)
+        if not HAS_SQLGLOT or not sql:
             return []
 
-        sql = asset.sql
         mappings: list[FieldMapping] = []
 
         # Build schema in sqlglot format: {table: {col: type}}
+        # Schema values are namespaced like "columns/email" — extract
+        # the child_id (last segment) for sqlglot compatibility.
         sg_schema: dict[str, dict[str, str]] = {}
-        for table, children in schema.items():
-            sg_schema[table] = {col: "VARCHAR" for col in children}
+        for table, namespaced_children in schema.items():
+            cols: dict[str, str] = {}
+            for namespaced in namespaced_children:
+                child_id = namespaced.split("/")[-1]
+                cols[child_id] = "VARCHAR"
+            sg_schema[table] = cols
 
         # Parse to find output columns
         try:
@@ -246,11 +258,12 @@ class SqlglotDependencyResolver(DependencyResolver):
                         output_cols.append(name)
             except Exception:
                 seen: set[str] = set()
-                for cols in schema.values():
-                    for c in cols:
-                        if c not in seen:
-                            output_cols.append(c)
-                            seen.add(c)
+                for namespaced_children in schema.values():
+                    for namespaced in namespaced_children:
+                        child_id = namespaced.split("/")[-1]
+                        if child_id not in seen:
+                            output_cols.append(child_id)
+                            seen.add(child_id)
 
         for col_name in output_cols:
             try:
@@ -331,16 +344,14 @@ def create_project(root: Path) -> Path:
                 "email": "platform@shop.io",
                 "team": "infrastructure",
             },
-            "children": [
+            "columns": [
                 {
                     "id": "user_id",
-                    "type": "column",
                     "type": "INTEGER",
                     "description": "Primary key",
                 },
                 {
                     "id": "email",
-                    "type": "column",
                     "type": "VARCHAR",
                     "pii": True,
                     "classification": "restricted",
@@ -348,15 +359,13 @@ def create_project(root: Path) -> Path:
                 },
                 {
                     "id": "full_name",
-                    "type": "column",
                     "type": "VARCHAR",
                     "pii": True,
                     "classification": "confidential",
                 },
-                {"id": "country", "type": "column", "type": "VARCHAR"},
+                {"id": "country", "type": "VARCHAR"},
                 {
                     "id": "created_at",
-                    "type": "column",
                     "type": "TIMESTAMP",
                     "description": "Account creation time",
                 },
@@ -385,33 +394,29 @@ def create_project(root: Path) -> Path:
                 "email": "platform@shop.io",
                 "team": "infrastructure",
             },
-            "children": [
+            "columns": [
                 {
                     "id": "order_id",
-                    "type": "column",
                     "type": "INTEGER",
                     "description": "Primary key",
                 },
                 {
                     "id": "user_id",
-                    "type": "column",
                     "type": "INTEGER",
                     "description": "FK to users",
                 },
                 {
                     "id": "amount",
-                    "type": "column",
                     "type": "DECIMAL",
                     "description": "Order total in USD",
                 },
-                {"id": "currency", "type": "column", "type": "VARCHAR"},
+                {"id": "currency", "type": "VARCHAR"},
                 {
                     "id": "status",
-                    "type": "column",
                     "type": "VARCHAR",
                     "description": "pending/completed/refunded",
                 },
-                {"id": "ordered_at", "type": "column", "type": "TIMESTAMP"},
+                {"id": "ordered_at", "type": "TIMESTAMP"},
             ],
             "tests": [
                 {"name": "order_id_not_null", "type": "not_null", "column": "order_id"},
@@ -437,12 +442,12 @@ def create_project(root: Path) -> Path:
             "description": "Product catalog from the CMS",
             "tags": ["raw", "catalog"],
             "materialized": "table",
-            "children": [
-                {"id": "product_id", "type": "column", "type": "INTEGER"},
-                {"id": "name", "type": "column", "type": "VARCHAR"},
-                {"id": "category", "type": "column", "type": "VARCHAR"},
-                {"id": "price", "type": "column", "type": "DECIMAL"},
-                {"id": "is_active", "type": "column", "type": "BOOLEAN"},
+            "columns": [
+                {"id": "product_id", "type": "INTEGER"},
+                {"id": "name", "type": "VARCHAR"},
+                {"id": "category", "type": "VARCHAR"},
+                {"id": "price", "type": "DECIMAL"},
+                {"id": "is_active", "type": "BOOLEAN"},
             ],
         },
     )
@@ -460,16 +465,15 @@ def create_project(root: Path) -> Path:
             "tags": ["staging", "pii", "users"],
             "materialized": "view",
             "owner": {"name": "Analytics Engineering", "team": "analytics"},
-            "children": [
-                {"id": "user_id", "type": "column", "type": "INTEGER"},
+            "columns": [
+                {"id": "user_id", "type": "INTEGER"},
                 {
                     "id": "email_domain",
-                    "type": "column",
                     "type": "VARCHAR",
                     "description": "Domain part of email (PII-safe)",
                 },
-                {"id": "country", "type": "column", "type": "VARCHAR"},
-                {"id": "created_at", "type": "column", "type": "TIMESTAMP"},
+                {"id": "country", "type": "VARCHAR"},
+                {"id": "created_at", "type": "TIMESTAMP"},
             ],
             "tests": [
                 {"name": "user_id_not_null", "type": "not_null", "column": "user_id"},
@@ -507,16 +511,15 @@ SELECT * FROM cleaned""",
             "tags": ["staging", "finance", "orders"],
             "materialized": "view",
             "owner": {"name": "Analytics Engineering", "team": "analytics"},
-            "children": [
-                {"id": "order_id", "type": "column", "type": "INTEGER"},
-                {"id": "user_id", "type": "column", "type": "INTEGER"},
+            "columns": [
+                {"id": "order_id", "type": "INTEGER"},
+                {"id": "user_id", "type": "INTEGER"},
                 {
                     "id": "amount_usd",
-                    "type": "column",
                     "type": "DECIMAL",
                     "description": "Amount normalized to USD",
                 },
-                {"id": "ordered_at", "type": "column", "type": "TIMESTAMP"},
+                {"id": "ordered_at", "type": "TIMESTAMP"},
             ],
             "tests": [
                 {"name": "order_id_not_null", "type": "not_null", "column": "order_id"},
@@ -567,14 +570,14 @@ SELECT * FROM normalized""",
             "description": "User enriched with order aggregates",
             "tags": ["intermediate", "users", "orders"],
             "materialized": "view",
-            "children": [
-                {"id": "user_id", "type": "column", "type": "INTEGER"},
-                {"id": "email_domain", "type": "column", "type": "VARCHAR"},
-                {"id": "country", "type": "column", "type": "VARCHAR"},
-                {"id": "total_spent", "type": "column", "type": "DECIMAL"},
-                {"id": "order_count", "type": "column", "type": "INTEGER"},
-                {"id": "first_order_at", "type": "column", "type": "TIMESTAMP"},
-                {"id": "last_order_at", "type": "column", "type": "TIMESTAMP"},
+            "columns": [
+                {"id": "user_id", "type": "INTEGER"},
+                {"id": "email_domain", "type": "VARCHAR"},
+                {"id": "country", "type": "VARCHAR"},
+                {"id": "total_spent", "type": "DECIMAL"},
+                {"id": "order_count", "type": "INTEGER"},
+                {"id": "first_order_at", "type": "TIMESTAMP"},
+                {"id": "last_order_at", "type": "TIMESTAMP"},
             ],
         },
         sql="""\
@@ -621,12 +624,12 @@ LEFT JOIN orders ON users.user_id = orders.user_id""",
                 "email": "finance-data@shop.io",
                 "team": "finance",
             },
-            "children": [
-                {"id": "country", "type": "column", "type": "VARCHAR"},
-                {"id": "total_revenue", "type": "column", "type": "DECIMAL"},
-                {"id": "avg_order_value", "type": "column", "type": "DECIMAL"},
-                {"id": "total_orders", "type": "column", "type": "INTEGER"},
-                {"id": "unique_customers", "type": "column", "type": "INTEGER"},
+            "columns": [
+                {"id": "country", "type": "VARCHAR"},
+                {"id": "total_revenue", "type": "DECIMAL"},
+                {"id": "avg_order_value", "type": "DECIMAL"},
+                {"id": "total_orders", "type": "INTEGER"},
+                {"id": "unique_customers", "type": "INTEGER"},
             ],
             "metrics": [
                 {
@@ -680,18 +683,17 @@ GROUP BY base.country""",
             "tags": ["mart", "marketing", "users"],
             "materialized": "table",
             "owner": {"name": "Marketing Analytics", "team": "marketing"},
-            "children": [
-                {"id": "user_id", "type": "column", "type": "INTEGER"},
-                {"id": "email_domain", "type": "column", "type": "VARCHAR"},
-                {"id": "country", "type": "column", "type": "VARCHAR"},
+            "columns": [
+                {"id": "user_id", "type": "INTEGER"},
+                {"id": "email_domain", "type": "VARCHAR"},
+                {"id": "country", "type": "VARCHAR"},
                 {
                     "id": "segment",
-                    "type": "column",
                     "type": "VARCHAR",
                     "description": "vip/regular/new/inactive",
                 },
-                {"id": "lifetime_value", "type": "column", "type": "DECIMAL"},
-                {"id": "order_count", "type": "column", "type": "INTEGER"},
+                {"id": "lifetime_value", "type": "DECIMAL"},
+                {"id": "order_count", "type": "INTEGER"},
             ],
         },
         sql="""\
@@ -742,7 +744,7 @@ def main() -> None:
             "staging": Environment(name="staging", parent="production"),
         },
     )
-    project = Assets(
+    project = Project(
         environment="production",
         backend=backend,
         env_config=env_config,
@@ -763,7 +765,7 @@ def main() -> None:
 
     print(f"\n  Registered assets ({len(registry)}):")
     for asset in registry.all():
-        n_children = len(asset.children)
+        n_children = len(asset.children())
         tests = len(asset.tests) if hasattr(asset, "tests") else 0
         deps = f"  deps={asset.depends_on}" if asset.depends_on else ""
         print(
@@ -809,15 +811,15 @@ def main() -> None:
     print(f"{'─' * 70}")
 
     stg_users = registry.get("staging.users")
-    print(f"  staging.users children: {stg_users.list_children()}")
+    print(f"  staging.users children: {[c.id for c in stg_users.children()]}")
 
-    email_col = stg_users.get_child("email_domain")
+    email_col = stg_users.child("columns/email_domain")
     print(f"  email_domain → type={email_col.type}, desc='{email_col.description}'")
 
     # PII scan across all models (inspecting children)
     pii_fields = []
     for asset in registry.all():
-        for child in asset.children:
+        for child in asset.children():
             if hasattr(child, "pii") and child.pii:
                 pii_fields.append(f"{asset.id}/{child.id}")
     print(f"\n  PII columns across all models: {pii_fields}")
@@ -825,7 +827,7 @@ def main() -> None:
     # Restricted classification scan
     restricted = []
     for asset in registry.all():
-        for child in asset.children:
+        for child in asset.children():
             if (
                 hasattr(child, "classification")
                 and child.classification == Classification.RESTRICTED
@@ -895,15 +897,14 @@ def main() -> None:
                 "email": "finance-data@shop.io",
                 "team": "finance",
             },
-            "children": [
-                {"id": "country", "type": "column", "type": "VARCHAR"},
-                {"id": "total_revenue", "type": "column", "type": "DECIMAL"},
-                {"id": "avg_order_value", "type": "column", "type": "DECIMAL"},
-                {"id": "total_orders", "type": "column", "type": "INTEGER"},
-                {"id": "unique_customers", "type": "column", "type": "INTEGER"},
+            "columns": [
+                {"id": "country", "type": "VARCHAR"},
+                {"id": "total_revenue", "type": "DECIMAL"},
+                {"id": "avg_order_value", "type": "DECIMAL"},
+                {"id": "total_orders", "type": "INTEGER"},
+                {"id": "unique_customers", "type": "INTEGER"},
                 {
                     "id": "repeat_rate",
-                    "type": "column",
                     "type": "DECIMAL",
                     "description": "Fraction of customers with >1 order",
                 },

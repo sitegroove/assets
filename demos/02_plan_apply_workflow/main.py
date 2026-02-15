@@ -14,7 +14,7 @@ from pathlib import Path
 
 from assets import (
     Asset,
-    Assets,
+    Project,
     Environment,
     EnvironmentConfig,
     SQLiteBackend,
@@ -34,7 +34,7 @@ class DataModel(Asset):
 # ──────────────────────────────────────────────────────────────
 
 
-def load_json_models(project: Assets, models_dir: Path) -> None:
+def load_json_models(project: Project, models_dir: Path) -> None:
     """Discover, parse, and register JSON asset files."""
     for path in sorted(models_dir.rglob("*.json")):
         data = json.loads(path.read_text())
@@ -107,7 +107,7 @@ config = EnvironmentConfig(
     default="production",
     environments={"production": Environment(name="production")},
 )
-project = Assets(
+project = Project(
     environment="production",
     backend=backend,
     env_config=config,

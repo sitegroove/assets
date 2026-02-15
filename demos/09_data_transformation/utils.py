@@ -159,16 +159,17 @@ class ColumnLineageResolver(DependencyResolver):
 
     def resolve(self, asset: Asset, schema: dict[str, list[str]]) -> list[FieldMapping]:
         """Parse SQL and trace column dependencies."""
-        if not HAS_SQLGLOT or not asset.sql:
+        sql = getattr(asset, "sql", None)
+        if not HAS_SQLGLOT or not sql:
             return []
 
-        sql = asset.sql
         mappings: list[FieldMapping] = []
 
         # Build sqlglot schema: {table: {col: "VARCHAR"}}
+        # Schema values are namespaced ("columns/email"), extract child id
         sg_schema: dict[str, dict[str, str]] = {}
         for table, children in schema.items():
-            sg_schema[table] = {col: "VARCHAR" for col in children}
+            sg_schema[table] = {col.rsplit("/", 1)[-1]: "VARCHAR" for col in children}
 
         try:
             parsed = sqlglot.parse_one(sql)

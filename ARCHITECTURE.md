@@ -31,7 +31,7 @@ This document describes the internal architecture of the `assets` library — it
 │  └───────────┘                                                   │
 │                                                                   │
 │  ┌──────────────────────────────────────────────────────────────┐ │
-│  │ Assets Facade (high-level API)                              │ │
+│  │ Project Facade (high-level API)                              │ │
 │  │ register/select/plan/apply/promote_to/load                 │ │
 │  └──────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────┘
@@ -73,8 +73,8 @@ The library never inspects SQL content. Consumers are responsible for setting `d
 
 | File | Key Types | Purpose |
 |---|---|---|
-| `parser.py` | `GraphSelector` | Parse and execute dbt-style selectors against a registry graph |
-| `state.py` | `StateSelector` | Adds `state:*` selectors backed by `StateManager.plan()` |
+| `base.py` | `Selector` (ABC) | Abstract selector with built-in state awareness helpers (`_state_names`, `_resolve_plan`) |
+| `parser.py` | `GraphSelector` | Parse and execute selectors against a registry graph — handles graph traversal, tag/type filters, wildcards, and `state:*` terms |
 
 **Supported syntax:**
 
@@ -391,7 +391,8 @@ assets/
 │   └── lineage.py           # DependencyResolver (ABC)
 ├── selector/
 │   ├── __init__.py
-│   └── parser.py            # SelectorParser
+│   ├── base.py              # Selector (ABC) with state awareness helpers
+│   └── parser.py            # GraphSelector (graph + state selectors)
 ├── state/
 │   ├── __init__.py
 │   ├── models.py            # StateSnapshot, AssetState, DependencyState
@@ -430,7 +431,7 @@ tests/
 
 demos/
 ├── 01_core_basics/
-│   └── main.py              # Assets, fingerprinting, graph, selectors, nested children
+│   └── main.py              # Project, fingerprinting, graph, selectors, nested children
 ├── 02_plan_apply_workflow/
 │   └── main.py              # Plan/apply/modify lifecycle
 ├── 03_multi_environment/

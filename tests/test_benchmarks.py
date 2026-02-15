@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from assets import Assets
+from assets import Project
 from assets.core.asset import Asset
 from assets.core.dependency import Dependency
 from assets.core.graph import AssetGraph
@@ -67,9 +67,9 @@ def registry_10k(assets_10k: tuple[list[Asset], list[Dependency]]) -> Registry:
 
 
 @pytest.fixture(scope="module")
-def project_10k(assets_10k: tuple[list[Asset], list[Dependency]]) -> Assets:
+def project_10k(assets_10k: tuple[list[Asset], list[Dependency]]) -> Project:
     assets, _ = assets_10k
-    project = Assets()
+    project = Project()
     project.register_many(assets)
     return project
 
@@ -301,7 +301,7 @@ def test_bench_save_incremental_10k(
 
 def test_bench_selector_tag_10k(
     benchmark: pytest.fixture,
-    project_10k: Assets,
+    project_10k: Project,
 ) -> None:
     """Select by tag on a 10K-asset graph (indexed O(1) lookup)."""
     benchmark(lambda: project_10k.select("tag:pii"))

@@ -20,7 +20,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from assets import Asset, Assets, LoadedAsset, SourceGroup
+from assets import Asset, LoadedAsset, Project, SourceGroup
 
 
 # ── Consumer-owned loader ────────────────────────────────────
@@ -81,7 +81,7 @@ def main() -> None:
     state_dir = project_root / ".assets_state"
     shutil.rmtree(state_dir, ignore_errors=True)
 
-    project = Assets(environment="production", state_dir=str(state_dir))
+    project = Project(environment="production", state_dir=str(state_dir))
 
     groups = [
         SourceGroup(
