@@ -46,7 +46,7 @@ Everything in the library builds on these models.
 | File | Key Types | Purpose |
 |---|---|---|
 | `fields.py` | `AssetField()` | Pydantic `Field()` wrapper with `fingerprint` metadata |
-| `asset.py` | `Asset` | Base model: id, type, tags, sql, metadata, children. Computed `fingerprint` (SHA-256). Child introspection via `get_child()`, `list_children()`, `get_child_at()`. Recursive nesting via `children: list[Asset]` |
+| `asset.py` | `Asset` | Base model: id, type, tags, metadata. Computed `fingerprint` (SHA-256). Child introspection via `get_child()`, `list_children()`, `get_child_at()`. Consumers define children via `AssetField(children=True)` on subclasses |
 | `dependency.py` | `Dependency`, `FieldMapping` | Graph edge (source→target) with type and computed fingerprint. FieldMapping uses path-based `source`/`target` (e.g., `"raw.users/email"`) with `/` separator |
 | `graph.py` | `AssetGraph`, `SelectionResult` | DAG built from assets + dependencies. Traversal (`ancestors`, `descendants`), `topological_sort()`, `roots()`, `leaves()`, `stale()` for topology-aware cascade |
 | `registry.py` | `Registry` | Central store. `register()`, `register_many()`, `unregister()`, `unregister_many()`. Lazy graph. Delegates selector queries and field-level dependency resolution |
@@ -97,7 +97,7 @@ The library never inspects SQL content. Consumers are responsible for setting `d
 | File | Key Types | Purpose |
 |---|---|---|
 | `base.py` | `Index` (ABC) | Abstract base class for index implementations. Methods: `put()`, `remove()`, `stale_entries()`, `close()`. Freshness tracker only — no data storage or retrieval |
-| `file.py` | `FileIndex`, `IndexStatus`, `MtimeCache` | SQLite-backed file index with per-entry dependency tracking. Two-tier freshness: mtime → content hash → miss. Hash/fingerprint in `state.db`; mtimes in local JSON cache (never synced) |
+| `file.py` | `FileIndex`, `IndexStatus`, `MtimeCache` | SQLite-backed file index with per-entry dependency tracking. Two-tier freshness: mtime → content hash → miss. Hash/fingerprint in `index.db` (local only); mtimes in local JSON cache (never synced) |
 
 ### `assets/loader/` — File Discovery
 
@@ -128,9 +128,10 @@ classify them against `FileIndex`, parse stale files, and register assets direct
 ```
 
 **On-disk layout:**
-Index tables (`index_entries`, `index_deps`) live inside `state.db` (synced to remote).
-Mtimes are stored in a **local JSON file** (`mtime_cache.json`, never synced) so that
-mtime-only changes (save/revert, git checkout) do not dirty `state.db` and trigger
+Index tables (`index_entries`, `index_deps`) live in a separate `index.db` (never synced
+to remote). This keeps the file index local-only, while `state.db` holds only environment
+state. Mtimes are stored in a **local JSON file** (`mtime_cache.json`, never synced) so
+that mtime-only changes (save/revert, git checkout) do not dirty any database and trigger
 unnecessary remote pushes via `TieredBackend`.
 
 ### `assets/state/` — Persistence and Environments
@@ -138,11 +139,11 @@ unnecessary remote pushes via `TieredBackend`.
 | File | Key Types | Purpose |
 |---|---|---|
 | `models.py` | `StateSnapshot`, `AssetState`, `DependencyState` | Pydantic models for persisted state |
-| `environment.py` | `Environment`, `EnvironmentConfig` | Environment definition (name, parent, shallow flag) and multi-environment config |
-| `backend.py` | `StateBackend` (ABC) | Abstract interface: `load()`, `save()`, `lock()`, `list_environments()`, `delete_environment()` |
-| `db.py` | `connect_state` | SQLite schema definitions (state + index tables), connection factory, WAL pragmas |
-| `sqlite.py` | `SQLiteBackend` | Default backend. Single SQLite database with automatic version history via triggers. Supports `":memory:"` for fast, transient testing with full schema/trigger parity. `local_path` property returns the parent directory |
-| `tiered.py` | `TieredBackend` | Local SQLite + remote sync via fsspec. Remote can be S3/GCS/Azure or a local directory. Params: `remote_path`, `local_path` |
+| `environment.py` | `Environment`, `EnvironmentConfig` | Environment definition (name, metadata) and multi-environment config |
+| `backend.py` | `StateBackend` (ABC) | Abstract interface: `load()`, `save()`, `lock()`, `list_environments()`, `delete_environment()`, `copy_environment()` |
+| `db.py` | `connect_state`, `connect_index` | SQLite schema definitions (separate state and index schemas), connection factories, WAL pragmas |
+| `sqlite.py` | `SQLiteBackend` | Default backend. Directory-per-environment with one `state.db` per env. Supports `":memory:"` for fast, transient testing. `copy_environment()` uses SQLite file copy with WAL checkpoint |
+| `tiered.py` | `TieredBackend` | Local SQLite + remote sync via fsspec. Per-environment remote paths (`{root}/{env}/state.db`). `copy_environment()` syncs source, copies local, pushes target |
 
 **State model hierarchy:**
 ```
@@ -155,37 +156,48 @@ StateSnapshot
 │       ├── name, kind, fingerprint
 │       ├── data: dict              ← full serialized asset
 │       ├── applied_at, applied_by
-│       ├── version: int
-│       └── deleted: bool           ← tombstone for shallow envs
+│       └── version: int
 ├── dependencies: list[DependencyState]
 └── metadata: dict
 ```
 
-**Environment types:**
+**Environment model:**
 
-| Type | shallow | What it stores | Use case |
-|---|---|---|---|
-| Full | `False` | Complete state of all assets | production, staging |
-| Shallow | `True` | Only assets the developer touched | dev branches, PRs |
-
-Shallow environments inherit from their parent. When resolving state for a shallow env, the library walks the parent chain and overlays local changes on top. Deletions are stored as tombstones (`deleted=True`) so they don't fall through to the parent.
+Each environment is fully independent — it stores a complete copy of all
+asset state. Creating a new environment copies the parent's `state.db` file
+(copy-on-create). From that point on the two environments share nothing.
+There are no shallow environments, parent chains, or tombstones.
 
 **Backend on-disk layout (SQLiteBackend):**
 ```
 .assets_state/
-└── state.db        ← single SQLite file (all environments + index tables)
+├── index.db                     ← file index (never synced to remote)
+├── production/
+│   └── state.db                 ← production environment state
+├── staging/
+│   └── state.db                 ← staging environment state
+└── dev-alice/
+    └── state.db                 ← dev environment state (copied from production)
 ```
 
 **Backend on-disk layout (TieredBackend — local + remote):**
 ```
-Local (local_path):
+Local (base_path):
   .assets_state/
-  └── state.db                   ← local SQLite (fast reads)
+  ├── index.db                   ← file index (local only)
+  ├── production/
+  │   └── state.db               ← local SQLite (fast reads)
+  └── dev-alice/
+      └── state.db
 
-Remote (remote_path — S3/GCS or local dir):
-  s3://my-bucket/state/  OR  /mnt/shared/state/
-  ├── state.db                   ← full SQLite database
-  ├── snapshot.json              ← sync metadata (fingerprint, version)
+Remote (remote_root — S3/GCS or local dir):
+  s3://my-bucket/state/
+  ├── production/
+  │   ├── state.db               ← full SQLite database
+  │   └── snapshot.json          ← sync metadata (fingerprint, version)
+  ├── dev-alice/
+  │   ├── state.db
+  │   └── snapshot.json
   └── production.lock            ← temporary lock file
 ```
 
@@ -201,9 +213,8 @@ Remote (remote_path — S3/GCS or local dir):
 ```
 For each desired asset:
   1. Not in current state?          → CREATE
-  2. In state but deleted?          → CREATE (resurrect)
-  3. Fingerprint matches?           → SKIP (fast path)
-  4. Fingerprint differs?           → UPDATE + deep diff fields
+  2. Fingerprint matches?           → SKIP (fast path)
+  3. Fingerprint differs?           → UPDATE + deep diff fields
 
 For each asset in state but not desired:
   → DELETE
@@ -213,7 +224,7 @@ For each asset in state but not desired:
 ```
 plan(selector, environment?)
   1. registry.all() or GraphSelector(registry).execute(selector)  ← desired assets
-  2. _resolve_state(env)                  ← walk parent chain for shallow envs
+  2. backend.load(env)                    ← load state from env's state.db
   3. differ.diff(desired, current)        ← fingerprint-first
   4. return Plan(changeset)
 ```
@@ -229,7 +240,7 @@ apply(plan, environment?)
     2. for each change:
        - CREATE: add AssetState
        - UPDATE: replace AssetState
-       - DELETE: remove (or tombstone for shallow)
+       - DELETE: remove from state
     3. backend.save(env, state)         ← persist (+ push to remote for Tiered)
   return ApplyResult
 ```
@@ -238,7 +249,7 @@ apply(plan, environment?)
 ```
 promote_to(to_env, selector, from_env?)
   1. Load source env state
-  2. Resolve target env state (with parent chain)
+  2. Load target env state
   3. Build desired from source (optionally filtered)
   4. Diff desired vs. target
   5. Return Plan for target env
@@ -246,14 +257,15 @@ promote_to(to_env, selector, from_env?)
 
 **TieredBackend sync flow:**
 ```
-Sync protocol:
-  1. Remote stores: state.db + snapshot.json
+Sync protocol (per-environment):
+  1. Remote stores per env: {root}/{env}/state.db + {root}/{env}/snapshot.json
   2. snapshot.json = {"fingerprint": "<sha256>", "version": N, "updated_at": "..."}
-  3. On load(): compare local DB fingerprint vs remote snapshot
+  3. On load(env): compare local DB fingerprint vs remote snapshot for that env
      - Match → skip download (fast local path)
-     - Differ → pull remote state.db → local
-  4. On save(): write local SQLite, then push state.db + snapshot.json
-  5. On lock(): acquire remote lock file, pull if stale, yield, push on exit
+     - Differ → pull remote state.db → local env directory
+  4. On save(env): write local SQLite, then push state.db + snapshot.json for env
+  5. On lock(env): acquire remote lock file, pull if stale, yield, push on exit
+  6. copy_environment(src, tgt): sync source, file-copy local state.db, push target
 ```
 
 ## Extension Points
@@ -273,8 +285,8 @@ class DataModel(Asset):
 
 - Add any Pydantic fields
 - Use `AssetField(fingerprint=False)` to exclude from change detection
-- Nest child assets via the inherited `children: list[Asset]` field
-- Override `children` type for specific subtypes: `children: list[Column] = []`
+- Use `AssetField(children=True)` to declare child asset fields (e.g., `columns: list[Column]`)
+- Children are namespaced under the parent with auto-generated paths
 
 ### 2. Consumer-Driven Loading
 
@@ -296,8 +308,8 @@ Implement `resolve(sql, schema) → list[FieldMapping]`:
 
 ### 4. State Backends (`StateBackend`)
 
-Implement the 5 abstract methods for any storage. Built-in backends:
-- `SQLiteBackend` — single SQLite database file (default); pass `":memory:"` for testing
+Implement the abstract methods for any storage. Built-in backends:
+- `SQLiteBackend` — directory-per-environment with one `state.db` per env (default); pass `":memory:"` for testing
 - `TieredBackend` — local SQLite + remote S3/GCS/Azure sync
 
 Custom backends can implement the same interface for:
@@ -361,11 +373,12 @@ StateManager
 4. **State stores fingerprints** — `AssetState.fingerprint` is the hash at apply time
 5. **Plan never mutates state** — it only reads and compares
 6. **Apply always acquires a lock** — concurrent applies to the same env are serialized
-7. **Shallow envs never store unmodified assets** — only overrides and tombstones
+7. **Environments are fully independent** — each has its own `state.db`; no parent chains or tombstones
 8. **Protected environments cannot be destroyed** — `production` and `staging` are protected
 9. **Field-level dependency resolution never runs automatically** — only when explicitly called by the consumer
-10. **SQLite is the default** — all local persistence uses SQLite (cache + state)
-11. **Tiered sync uses snapshot fingerprint** — avoids unnecessary remote downloads
+10. **SQLite is the default** — all local persistence uses SQLite (index.db + per-env state.db)
+11. **Tiered sync uses snapshot fingerprint** — per-env comparison avoids unnecessary remote downloads
+12. **index.db is local-only** — file index tables live in a separate database, never synced to remote
 
 ## File Inventory
 
@@ -398,7 +411,7 @@ assets/
 │   ├── models.py            # StateSnapshot, AssetState, DependencyState
 │   ├── environment.py       # Environment, EnvironmentConfig
 │   ├── backend.py           # StateBackend (ABC)
-│   ├── db.py                # SQLite schema, connection factories, WAL pragmas
+│   ├── db.py                # SQLite schemas (state + index), connection factories, WAL pragmas
 │   ├── sqlite.py            # SQLiteBackend (default)
 │   └── tiered.py            # TieredBackend (local SQLite + remote sync)
 └── engine/
@@ -435,7 +448,7 @@ demos/
 ├── 02_plan_apply_workflow/
 │   └── main.py              # Plan/apply/modify lifecycle
 ├── 03_multi_environment/
-│   └── main.py              # Shallow envs, promotion
+│   └── main.py              # Copy-on-create envs, promotion
 ├── 04_custom_loader/
 │   └── main.py              # Consumer-driven YAML+SQL loading with FileDiscovery + FileIndex
 ├── 05_lineage_resolver/

@@ -34,7 +34,7 @@ and planning.
 | **Plan/apply workflow** | Preview and review changes before writing state, enabling safe deploy and CI workflows. |
 | **Dependency graph** | Build a DAG from declared relationships for impact analysis and topological execution order. |
 | **Selector query language** | Target specific subsets of assets by tag, type, wildcard, lineage, or change state. |
-| **Multi-environment state** | Isolate development and promotion flows with environment inheritance and protected targets. |
+| **Multi-environment state** | Isolate development and promotion flows with copy-on-create environments and protected targets. |
 | **Pluggable file loading** | Bring your own parsing logic for YAML, JSON, Python, TOML, or external sources. |
 | **Drift detection** | Compare current definitions against persisted state to catch unintended configuration drift. |
 | **Column-level lineage hooks** | Add field-level dependency resolution for PII tracing and deep impact analysis. |
@@ -196,7 +196,8 @@ impacted = project.select("state:modified+")
 
 ### Environments
 
-Model development and promotion flows with full and shallow environments.
+Model development and promotion flows with isolated, copy-on-create
+environments.
 
 ```python
 from assets import Environment, EnvironmentConfig, Project
@@ -209,21 +210,20 @@ project = Project(
         default="production",
         environments={
             "production": Environment(name="production"),
-            "staging": Environment(name="staging", parent="production"),
         },
     ),
     protected_environments={"production", "staging"},
 )
 
-project.create_environment("dev-alice", parent="production", shallow=True)
-promote_plan = project.promote_to("staging")
+project.create_environment("dev-alice", parent="production")
+promote_plan = project.promote_to("staging", from_env="dev-alice")
 project.apply(promote_plan)
 ```
 
-| Type | What it stores | Use case |
-|---|---|---|
-| Full | Complete state of all assets | production, staging |
-| Shallow | Only assets changed in that environment | dev branches, PRs |
+Creating an environment copies the parent's state into a new, fully
+independent directory. From that point on, the two environments share
+nothing — changes in one never affect the other. Promotion between
+environments uses the standard `promote_to()` → `apply()` workflow.
 
 ### File Loading
 
@@ -373,7 +373,7 @@ mappings = project.resolve("lineage", asset_id="staging.users")
 
 | Backend | Use case |
 |---|---|
-| `SQLiteBackend` | Default, single-file local persistence |
+| `SQLiteBackend` | Default, directory-per-environment local persistence |
 | `SQLiteBackend.memory()` | In-memory backend for tests and short-lived runs |
 | `TieredBackend` | Local SQLite + remote sync through S3/GCS/other fsspec stores |
 
@@ -405,7 +405,7 @@ For internal architecture, data flow, and low-level APIs, see
 |---|---|---|
 | `demos/01_core_basics` | Defining assets, fingerprinting, graph queries, selectors | Beginner |
 | `demos/02_plan_apply_workflow` | Terraform-style plan/apply lifecycle | Beginner |
-| `demos/03_multi_environment` | Shallow dev environments and promotion | Intermediate |
+| `demos/03_multi_environment` | Copy-on-create dev environments and promotion | Intermediate |
 | `demos/04_custom_loader` | Consumer-driven YAML+SQL loading with `SourceGroup` | Intermediate |
 | `demos/05_lineage_resolver` | Custom field-level dependency resolver | Intermediate |
 | `demos/06_ecommerce_platform` | Full e-commerce analytics architecture | Advanced |
