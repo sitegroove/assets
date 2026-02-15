@@ -1,15 +1,18 @@
 """Tests for SQLiteBackend — state persistence with version history."""
 
+from datetime import datetime, timedelta, timezone
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 
 from assets import SQLiteBackend
+from assets.state.sqlite import _parse_dt
 from assets.state.models import AssetState, DependencyState, StateSnapshot
 
 
 @pytest.fixture
-def backend(tmp_path: Path) -> SQLiteBackend:
+def backend(tmp_path: Path) -> Generator[SQLiteBackend, None, None]:
     b = SQLiteBackend(db_path=tmp_path / "state.db")
     yield b
     b.close()
@@ -387,6 +390,31 @@ class TestSQLiteBackendHistory:
 
         data = json.loads(history[0]["data"])
         assert data["sql"] == "SELECT 1"
+
+    def test_environment_changelog_since_filters(self, backend: SQLiteBackend) -> None:
+        state = StateSnapshot(
+            environment="dev",
+            assets={"a": AssetState(id="a", fingerprint="fp1")},
+        )
+        backend.save("dev", state)
+
+        all_rows = backend.environment_changelog(
+            "dev",
+            since="1970-01-01T00:00:00.000Z",
+        )
+        assert len(all_rows) >= 1
+
+        future_since = (datetime.now(timezone.utc) + timedelta(days=1)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+        assert backend.environment_changelog("dev", since=future_since) == []
+
+
+class TestDatetimeParsing:
+    def test_parse_dt_fallback_isoformat_with_offset(self) -> None:
+        parsed = _parse_dt("2026-01-01T10:20:30+00:00")
+        assert parsed.tzinfo is not None
+        assert parsed.year == 2026
 
 
 class TestSQLiteBackendPruneHistory:

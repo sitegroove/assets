@@ -151,6 +151,56 @@ class TestAssetGraph:
         assert g.roots() == {"a"}
         assert g.leaves() == {"a"}
 
+    def test_getitem_returns_asset(self):
+        g = _build_graph({"a": Asset(id="a")}, [])
+        assert g["a"].id == "a"
+
+    def test_getitem_missing_raises_helpful_error(self):
+        assets = {name: Asset(id=name) for name in ["a", "b", "c", "d", "e", "f"]}
+        g = _build_graph(assets, [])
+
+        with pytest.raises(KeyError) as err:
+            _ = g["missing"]
+
+        message = str(err.value)
+        assert "Asset 'missing' not found in graph" in message
+        assert "Available:" in message
+
+    def test_to_dict_exports_assets_and_dependencies(self):
+        assets = {
+            "raw.users": Asset(id="raw.users", type="source"),
+            "staging.users": Asset(id="staging.users", type="model"),
+        }
+        deps = [Dependency(source="raw.users", target="staging.users", type="ref")]
+        g = _build_graph(assets, deps)
+
+        payload = g.to_dict()
+        assert set(payload.keys()) == {"assets", "dependencies"}
+        assert len(payload["assets"]) == 2
+        assert payload["dependencies"] == [
+            {"source": "raw.users", "target": "staging.users", "type": "ref"}
+        ]
+
+    def test_to_mermaid_sanitizes_ids(self):
+        assets = {
+            "raw.users": Asset(id="raw.users"),
+            "staging-users": Asset(id="staging-users"),
+            "mart sales": Asset(id="mart sales"),
+        }
+        deps = [
+            Dependency(source="raw.users", target="staging-users"),
+            Dependency(source="staging-users", target="mart sales"),
+        ]
+        g = _build_graph(assets, deps)
+
+        mermaid = g.to_mermaid()
+        assert mermaid.startswith("graph LR")
+        assert 'raw_users["raw.users"]' in mermaid
+        assert 'staging_users["staging-users"]' in mermaid
+        assert 'mart_sales["mart sales"]' in mermaid
+        assert "raw_users --> staging_users" in mermaid
+        assert "staging_users --> mart_sales" in mermaid
+
 
 class TestStale:
     """Tests for AssetGraph.stale() — topology-aware cascade."""

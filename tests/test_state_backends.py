@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -94,7 +97,7 @@ class TestMemoryBackend:
 class TestTieredBackend:
     """Test TieredBackend using fsspec's local filesystem (memory:// or file://)."""
 
-    def _make_backend(self, tmp_path: Path) -> TieredBackend:  # noqa: F821
+    def _make_backend(self, tmp_path: Path) -> Any:
         from assets.state.tiered import TieredBackend
 
         remote_dir = tmp_path / "remote"
@@ -230,7 +233,7 @@ class TestTieredBackend:
         backend = self._make_backend(tmp_path)
         backend.save("dev", StateSnapshot(environment="dev"))
         backend.close()
-        assert backend._local._conn is None
+        assert getattr(backend, "_local")._conn is None
 
     def test_double_lock_raises(self, tmp_path: Path) -> None:
         backend = self._make_backend(tmp_path)
@@ -266,7 +269,51 @@ class TestTieredBackend:
             loaded = backend.load("dev")
             assert loaded is not None
         # Connection should be closed after exit
-        assert backend._local._conn is None
+        assert getattr(backend, "_local")._conn is None
+
+    def test_remote_snapshot_missing_after_exists_returns_none(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        backend = self._make_backend(tmp_path)
+        with patch.object(backend._fs, "exists", return_value=True):
+            with patch.object(backend._fs, "cat_file", side_effect=FileNotFoundError):
+                assert backend._remote_snapshot() is None
+
+    def test_remote_snapshot_unexpected_error_returns_none(
+        self, tmp_path: Path
+    ) -> None:
+        backend = self._make_backend(tmp_path)
+        with patch.object(backend._fs, "exists", return_value=True):
+            with patch.object(backend._fs, "cat_file", side_effect=RuntimeError):
+                assert backend._remote_snapshot() is None
+
+    def test_pull_without_remote_db_is_noop(self, tmp_path: Path) -> None:
+        backend = self._make_backend(tmp_path)
+        assert not backend._local_db_path.exists()
+
+        backend.pull()
+
+        assert not backend._local_db_path.exists()
+
+    def test_pull_race_file_not_found_is_swallowed(self, tmp_path: Path) -> None:
+        backend = self._make_backend(tmp_path)
+
+        with patch.object(backend._fs, "exists", return_value=True):
+            with patch.object(backend._fs, "get_file", side_effect=FileNotFoundError):
+                backend.pull()
+
+        assert not backend._local_db_path.exists()
+
+    def test_sync_resets_synced_before_ensure(self, tmp_path: Path) -> None:
+        backend = self._make_backend(tmp_path)
+        backend._synced = True
+
+        with patch.object(backend, "_ensure_synced") as ensure_synced:
+            backend.sync()
+
+        ensure_synced.assert_called_once()
+        assert backend._synced is False
 
 
 # ─── TieredBackend locking edge cases ──────────────────────
@@ -288,7 +335,7 @@ class TestTieredBackendLockingEdgeCases:
         label: str = "local",
         lock_timeout: int = 300,
         lock_retries: int = 10,
-    ) -> TieredBackend:  # noqa: F821
+    ) -> Any:
         from assets.state.tiered import TieredBackend
 
         if remote_dir is None:
@@ -489,13 +536,120 @@ class TestTieredBackendLockingEdgeCases:
                 pass
 
 
+class TestTieredBackendInternalBranches:
+    @staticmethod
+    def _make_backend(
+        tmp_path: Path,
+        *,
+        lock_timeout: int = 300,
+        lock_retries: int = 3,
+    ) -> Any:
+        from assets.state.tiered import TieredBackend
+
+        remote_dir = tmp_path / "remote"
+        remote_dir.mkdir(exist_ok=True)
+        local_dir = tmp_path / "local"
+        return TieredBackend(
+            str(remote_dir),
+            local_path=local_dir,
+            lock_timeout=lock_timeout,
+            lock_retries=lock_retries,
+        )
+
+    def test_acquire_lock_when_exists_raises_file_not_found(
+        self, tmp_path: Path
+    ) -> None:
+        backend = self._make_backend(tmp_path)
+
+        with patch.object(backend._fs, "exists", side_effect=FileNotFoundError):
+            backend._acquire_remote_lock("dev")
+
+        assert "dev" in backend._remote_locks
+        backend._release_remote_lock("dev")
+
+    def test_acquire_lock_retries_when_pipe_file_fails(self, tmp_path: Path) -> None:
+        backend = self._make_backend(tmp_path, lock_retries=2)
+
+        with patch.object(backend._fs, "exists", return_value=False):
+            with patch.object(backend._fs, "pipe_file", side_effect=OSError("boom")):
+                with patch("assets.state.tiered.time.sleep", return_value=None):
+                    with pytest.raises(
+                        RuntimeError,
+                        match="Could not acquire remote lock",
+                    ):
+                        backend._acquire_remote_lock("dev")
+
+    def test_acquire_lock_retries_when_verify_ownership_fails(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        backend = self._make_backend(tmp_path, lock_retries=2)
+
+        with patch.object(backend._fs, "exists", return_value=False):
+            with patch.object(backend._fs, "cat_file", side_effect=OSError("boom")):
+                with patch("assets.state.tiered.time.sleep", return_value=None):
+                    with pytest.raises(
+                        RuntimeError,
+                        match="Could not acquire remote lock",
+                    ):
+                        backend._acquire_remote_lock("dev")
+
+    def test_try_remove_stale_lock_info_error_returns_false(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        backend = self._make_backend(tmp_path)
+
+        with patch.object(backend._fs, "info", side_effect=RuntimeError("boom")):
+            assert backend._try_remove_stale_lock("/tmp/dev.lock", "dev") is False
+
+    def test_try_remove_stale_lock_missing_mtime_returns_false(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        backend = self._make_backend(tmp_path)
+
+        with patch.object(backend._fs, "info", return_value={}):
+            assert backend._try_remove_stale_lock("/tmp/dev.lock", "dev") is False
+
+    def test_try_remove_stale_lock_disappeared_returns_true(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        backend = self._make_backend(tmp_path)
+
+        with patch.object(backend._fs, "info", side_effect=FileNotFoundError):
+            assert backend._try_remove_stale_lock("/tmp/dev.lock", "dev") is True
+
+    def test_try_remove_stale_lock_datetime_mtime_path(self, tmp_path: Path) -> None:
+        backend = self._make_backend(tmp_path)
+        stale_mtime = datetime.now(timezone.utc) - timedelta(hours=1)
+
+        with patch.object(backend._fs, "info", return_value={"mtime": stale_mtime}):
+            with patch.object(backend._fs, "rm") as rm:
+                assert backend._try_remove_stale_lock("/tmp/dev.lock", "dev") is True
+
+        rm.assert_called_once_with("/tmp/dev.lock")
+
+    def test_try_remove_stale_lock_rm_failure_returns_false(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        backend = self._make_backend(tmp_path)
+        stale_epoch = time.time() - 1_000
+
+        with patch.object(backend._fs, "info", return_value={"mtime": stale_epoch}):
+            with patch.object(backend._fs, "rm", side_effect=OSError("boom")):
+                assert backend._try_remove_stale_lock("/tmp/dev.lock", "dev") is False
+
+
 # ─── TieredBackend delegation ─────────────────────────────
 
 
 class TestTieredBackendDelegation:
     """Test that TieredBackend properly delegates to local SQLite."""
 
-    def _make_backend(self, tmp_path: Path) -> TieredBackend:  # noqa: F821
+    def _make_backend(self, tmp_path: Path) -> Any:
         from assets.state.tiered import TieredBackend
 
         remote_dir = tmp_path / "remote"
@@ -583,6 +737,39 @@ class TestTieredBackendDelegation:
         snap_after = json.loads((tmp_path / "remote" / "snapshot.json").read_text())
         assert snap_after["version"] == snap_before["version"]
 
+    def test_asset_history_and_changelog_delegate(self, tmp_path: Path) -> None:
+        backend = self._make_backend(tmp_path)
+
+        state = StateSnapshot(
+            environment="dev",
+            assets={"a": AssetState(id="a", fingerprint="v1", version=1)},
+        )
+        backend.save("dev", state)
+
+        state.assets["a"] = AssetState(id="a", fingerprint="v2", version=2)
+        backend.save("dev", state)
+
+        history = backend.asset_history("dev", "a")
+        assert len(history) == 2
+        assert history[0]["action"] == "update"
+
+        changelog = backend.environment_changelog("dev")
+        assert any(entry["asset_id"] == "a" for entry in changelog)
+
+        future_since = (datetime.now(timezone.utc) + timedelta(days=1)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+        assert backend.environment_changelog("dev", since=future_since) == []
+
+    def test_release_remote_lock_failure_is_swallowed(self, tmp_path: Path) -> None:
+        backend = self._make_backend(tmp_path)
+        backend._remote_locks.add("dev")
+
+        with patch.object(backend._fs, "rm", side_effect=OSError("boom")):
+            backend._release_remote_lock("dev")
+
+        assert "dev" not in backend._remote_locks
+
 
 # ─── Context manager tests for all backends ────────────────
 
@@ -597,4 +784,4 @@ class TestBackendContextManager:
         with SQLiteBackend(db_path=tmp_path / "state.db") as backend:
             backend.save("dev", StateSnapshot(environment="dev"))
             assert backend.load("dev") is not None
-        assert backend._conn is None
+        assert getattr(backend, "_conn") is None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from assets import (
     SQLiteBackend,
     StateManager,
 )
+from assets.state.backend import StateBackend
 from assets.state.models import AssetState, DependencyState, StateSnapshot
 
 
@@ -477,3 +479,86 @@ class TestResolveStateEmptyDependencies:
         resolved = mgr._resolve_state(env_config.environments["dev"])
         assert len(resolved.dependencies) == 1
         assert resolved.dependencies[0].source == "staging.users"
+
+
+class DummyBackend(StateBackend):
+    """Minimal backend used to exercise StateManager index guard rails."""
+
+    def load(self, environment: str) -> StateSnapshot | None:
+        return None
+
+    def save(
+        self,
+        environment: str,
+        state: StateSnapshot,
+        *,
+        changed_ids: set[str] | None = None,
+    ) -> None:
+        return None
+
+    @contextmanager
+    def lock(self, environment: str):
+        yield
+
+    def list_environments(self) -> list[str]:
+        return []
+
+    def delete_environment(self, environment: str) -> None:
+        return None
+
+
+class TestStateManagerIndexGuards:
+    def test_index_raises_for_in_memory_backend(self) -> None:
+        manager = StateManager(
+            Registry(),
+            SQLiteBackend.memory(),
+            EnvironmentConfig(
+                default="production",
+                environments={"production": Environment(name="production")},
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="file-backed SQLiteBackend"):
+            _ = manager.index
+
+    def test_index_raises_for_unsupported_backend(self) -> None:
+        manager = StateManager(
+            Registry(),
+            DummyBackend(),
+            EnvironmentConfig(
+                default="production",
+                environments={"production": Environment(name="production")},
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="requires a SQLiteBackend"):
+            _ = manager.index
+
+
+class TestShallowDeleteTombstones:
+    def test_apply_delete_in_shallow_env_creates_tombstone(self) -> None:
+        config = EnvironmentConfig(
+            default="dev",
+            environments={
+                "production": Environment(name="production"),
+                "dev": Environment(name="dev", parent="production", shallow=True),
+            },
+        )
+        manager = StateManager(Registry(), SQLiteBackend.memory(), config)
+
+        manager.registry.register(Asset(id="raw.users", type="source"))
+        create_plan = manager.plan(environment="dev")
+        manager.apply(create_plan, environment="dev")
+
+        manager.registry.clear()
+        delete_plan = manager.plan(environment="dev")
+        assert delete_plan.has_changes
+        manager.apply(delete_plan, environment="dev")
+
+        local_dev = manager.backend.load("dev")
+        assert local_dev is not None
+        assert "raw.users" in local_dev.assets
+        assert local_dev.assets["raw.users"].deleted is True
+
+        resolved = manager._resolve_state(config.environments["dev"])
+        assert "raw.users" not in resolved.assets

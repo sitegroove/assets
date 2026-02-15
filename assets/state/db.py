@@ -1,4 +1,4 @@
-"""Database manager — SQLite connection handling and schema management."""
+"""Database manager — SQLite connection handling and schema bootstrap."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-STATE_SCHEMA_VERSION = 3
 STATE_SCHEMA = """\
 -- ─── Environment metadata ──────────────────────────────────
 CREATE TABLE IF NOT EXISTS environments (
@@ -93,7 +92,6 @@ CREATE INDEX IF NOT EXISTS idx_history_time
 CREATE INDEX IF NOT EXISTS idx_history_author     ON assets_history(applied_by);
 
 -- ─── Triggers for automatic history ────────────────────────
--- Drop old triggers without WHEN guards (schema v2 → v3 migration)
 DROP TRIGGER IF EXISTS trg_assets_insert;
 DROP TRIGGER IF EXISTS trg_assets_update;
 DROP TRIGGER IF EXISTS trg_assets_delete;
@@ -190,49 +188,7 @@ CREATE TABLE IF NOT EXISTS index_deps (
 
 CREATE INDEX IF NOT EXISTS idx_index_deps_dep
     ON index_deps(dep_grp, dep_location);
-
--- ─── Schema version tracking ──────────────────────────────
-CREATE TABLE IF NOT EXISTS schema_version (
-    id      INTEGER PRIMARY KEY CHECK (id = 1),
-    version INTEGER NOT NULL
-);
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 3);
 """
-
-
-def _maybe_migrate(conn: sqlite3.Connection) -> None:
-    """Run forward migrations when the stored version is behind.
-
-    Each migration step applies DDL changes and bumps the stored
-    version.  Migrations are idempotent (``IF NOT EXISTS`` /
-    ``DROP ... IF EXISTS``) so re-running is safe.
-    """
-    try:
-        row = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()
-    except sqlite3.OperationalError:
-        # Table doesn't exist yet — schema will be created fresh
-        return
-
-    if row is None:
-        return
-
-    stored = row[0] if isinstance(row, (tuple, list)) else row["version"]
-
-    if stored < 3:
-        # v2 → v3: add WHEN guards to history triggers
-        conn.executescript(
-            """\
-            DROP TRIGGER IF EXISTS trg_assets_insert;
-            DROP TRIGGER IF EXISTS trg_assets_update;
-            DROP TRIGGER IF EXISTS trg_assets_delete;
-            DROP TRIGGER IF EXISTS trg_deps_insert;
-            DROP TRIGGER IF EXISTS trg_deps_update;
-            DROP TRIGGER IF EXISTS trg_deps_delete;
-            """
-        )
-        conn.execute("UPDATE schema_version SET version = 3 WHERE id = 1")
-        conn.commit()
-        logger.info("Migrated state schema from v%d to v3", stored)
 
 
 def _configure_connection(conn: sqlite3.Connection) -> None:
@@ -256,7 +212,6 @@ def connect_state(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str_path)
     conn.row_factory = sqlite3.Row
     _configure_connection(conn)
-    _maybe_migrate(conn)
     conn.executescript(STATE_SCHEMA)
     logger.debug("State database ready at %s", str_path)
     return conn

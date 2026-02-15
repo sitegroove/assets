@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -173,6 +175,21 @@ class SimpleYamlLoader:
         asset = Asset(id=path.stem, type="test")
         dep_pairs = [(root / d, d) for d in self._deps]
         return [LoadedAsset(asset=asset, deps=dep_pairs)]
+
+
+class PackageLoader:
+    """Imports a fixed package module from each source root."""
+
+    def __init__(self, module_name: str) -> None:
+        self._module_name = module_name
+
+    def load(self, path: Path, root: Path) -> list[LoadedAsset]:
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        importlib.invalidate_caches()
+        module = importlib.import_module(self._module_name)
+        asset = getattr(module, "ASSET")
+        return [LoadedAsset(asset=asset)]
 
 
 class TestLoaderProtocol:
@@ -463,3 +480,72 @@ class TestFileDiscoveryLoad:
         )
         result = discovery.load(manager, environment="production")
         assert result.loaded == 2
+
+    def test_load_runs_setup_and_teardown(
+        self, yaml_project: Path, manager: StateManager
+    ) -> None:
+        events: list[str] = []
+
+        discovery = FileDiscovery(
+            groups=[
+                SourceGroup(
+                    name="models",
+                    directory=yaml_project / "models",
+                    loader=SimpleYamlLoader(),
+                    setup=lambda: events.append("setup"),
+                    teardown=lambda: events.append("teardown"),
+                ),
+            ]
+        )
+
+        result = discovery.load(manager, environment="production")
+        assert result.loaded == 2
+        assert events == ["setup", "teardown"]
+
+    def test_load_cleans_modules_between_roots(self, tmp_path: Path) -> None:
+        """Same package name in two roots resolves correctly per group."""
+        for name in list(sys.modules):
+            if name == "resourcepkg" or name.startswith("resourcepkg."):
+                del sys.modules[name]
+
+        root_a = tmp_path / "root_a"
+        root_b = tmp_path / "root_b"
+        for root, asset_id in ((root_a, "asset.alpha"), (root_b, "asset.beta")):
+            pkg = root / "resourcepkg"
+            pkg.mkdir(parents=True)
+            (pkg / "__init__.py").write_text("")
+            (pkg / "asset_def.py").write_text(
+                "from assets import Asset\n"
+                f'ASSET = Asset(id="{asset_id}", type="test")\n'
+            )
+
+        registry = Registry()
+        manager = StateManager.create(registry, local_path=str(tmp_path / ".state"))
+
+        discovery = FileDiscovery(
+            groups=[
+                SourceGroup(
+                    name="alpha",
+                    root=root_a,
+                    directory=root_a / "resourcepkg",
+                    patterns=["asset_def.py"],
+                    loader=PackageLoader("resourcepkg.asset_def"),
+                ),
+                SourceGroup(
+                    name="beta",
+                    root=root_b,
+                    directory=root_b / "resourcepkg",
+                    patterns=["asset_def.py"],
+                    loader=PackageLoader("resourcepkg.asset_def"),
+                ),
+            ]
+        )
+
+        result = discovery.load(manager, environment="production")
+        assert result.loaded == 2
+        assert registry.get("asset.alpha") is not None
+        assert registry.get("asset.beta") is not None
+
+        for name in list(sys.modules):
+            if name == "resourcepkg" or name.startswith("resourcepkg."):
+                del sys.modules[name]

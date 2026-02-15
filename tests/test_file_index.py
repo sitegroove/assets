@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -115,6 +116,74 @@ class TestFileIndexBasics:
         discovered = [(src, src.stat().st_mtime_ns)]
         status = index.diff(discovered, tmp_project)
         assert len(status.fresh) == 1
+
+    def test_put_writes_entry_and_deps(self, index: FileIndex) -> None:
+        index.put(
+            "models/users.yaml",
+            group="models",
+            asset_id="raw.users",
+            fingerprint="fp1",
+            deps=[("macros/key.sql", "macro")],
+        )
+
+        row = index.conn.execute(
+            "SELECT grp, location, asset_id, fingerprint FROM index_entries"
+        ).fetchone()
+        assert row is not None
+        assert row["grp"] == "models"
+        assert row["location"] == "models/users.yaml"
+        assert row["asset_id"] == "raw.users"
+        assert row["fingerprint"] == "fp1"
+
+        dep_row = index.conn.execute(
+            "SELECT dep_grp, dep_location, dep_kind, dep_hash FROM index_deps"
+        ).fetchone()
+        assert dep_row is not None
+        assert dep_row["dep_grp"] == "models"
+        assert dep_row["dep_location"] == "macros/key.sql"
+        assert dep_row["dep_kind"] == "macro"
+        assert dep_row["dep_hash"] == ""
+
+    def test_put_without_deps_clears_previous_deps(self, index: FileIndex) -> None:
+        index.put(
+            "models/users.yaml",
+            group="models",
+            asset_id="raw.users",
+            fingerprint="fp1",
+            deps=[("macros/key.sql", "macro")],
+        )
+        index.put(
+            "models/users.yaml",
+            group="models",
+            asset_id="raw.users",
+            fingerprint="fp2",
+        )
+
+        dep_count = index.conn.execute("SELECT COUNT(*) FROM index_deps").fetchone()[0]
+        assert dep_count == 0
+
+    def test_close_flushes_mtime_cache(self, index: FileIndex) -> None:
+        with patch.object(index._mtime_cache, "flush") as flush:
+            index.close()
+        flush.assert_called_once()
+
+    def test_flush_cache_persists_mtime_cache(self, index: FileIndex) -> None:
+        with patch.object(index._mtime_cache, "flush") as flush:
+            index.flush_cache()
+        flush.assert_called_once()
+
+    def test_rel_path_falls_back_to_filename_when_outside_root(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        root = tmp_path / "project"
+        root.mkdir()
+        src = tmp_path / "outside" / "users.yaml"
+        src.parent.mkdir()
+        src.write_text("{}")
+
+        rel = FileIndex._rel_path(src, root)
+        assert rel == "users.yaml"
 
 
 # ── diff() classification ────────────────────────────────────
@@ -441,6 +510,35 @@ class TestFileIndexDeps:
 
         assert len(status.fresh) == 1
         assert index.conn.total_changes == changes_before
+
+    def test_check_deps_fresh_uses_cached_hash(self, index: FileIndex) -> None:
+        dep_current: dict[tuple[str, str], tuple[int, str | None]] = {
+            ("", "dep.sql"): (123, "hash123")
+        }
+        fresh, updated = index._check_deps_fresh(
+            entry_deps=[("", "dep.sql", "hash123")],
+            dep_current=dep_current,
+            root=Path("."),
+        )
+
+        assert fresh is True
+        assert updated is True
+
+    def test_check_deps_fresh_hash_read_error_marks_stale(
+        self, index: FileIndex
+    ) -> None:
+        dep_current: dict[tuple[str, str], tuple[int, str | None]] = {
+            ("", "dep.sql"): (123, None)
+        }
+        with patch.object(index, "_content_hash", side_effect=OSError("boom")):
+            fresh, updated = index._check_deps_fresh(
+                entry_deps=[("", "dep.sql", "hash123")],
+                dep_current=dep_current,
+                root=Path("."),
+            )
+
+        assert fresh is False
+        assert updated is False
 
 
 # ── clean() ──────────────────────────────────────────────────

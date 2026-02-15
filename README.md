@@ -2,6 +2,12 @@
 
 A declarative, graph-based asset registry powered by Pydantic. Think Terraform for data assets: you declare what exists, the library handles state, diffing, and planning.
 
+## Alpha Status
+
+This library is in early alpha and currently private. Breaking changes may land
+at any time without prior notice while the API and internals are still
+stabilizing.
+
 ## Install
 
 ```bash

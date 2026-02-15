@@ -1,5 +1,9 @@
 """Tests for the base Asset model."""
 
+from typing import cast
+
+from pydantic import BaseModel
+
 from assets import Asset, AssetField
 
 
@@ -9,7 +13,11 @@ class Column(Asset):
 
 
 class DataModel(Asset):
-    row_count: int = AssetField(default=0, fingerprint=False)
+    row_count: int = cast(int, AssetField(default=0, fingerprint=False))
+
+
+class PlainModel(BaseModel):
+    name: str
 
 
 class TestAsset:
@@ -217,3 +225,41 @@ class TestAsset:
         a1 = Asset(id="test")
         a2 = Asset(id="test", children=[])
         assert a1.fingerprint == a2.fingerprint
+
+    def test_add_dependency_empty_string_raises(self):
+        import pytest
+
+        a = Asset(id="x")
+        with pytest.raises(ValueError, match="non-empty"):
+            a.add_dependency("   ")
+
+    def test_hash_and_eq_behaviour(self):
+        a1 = Asset(id="same")
+        a2 = Asset(id="same")
+        a3 = Asset(id="different")
+
+        assert hash(a1) == hash("same")
+        assert a1 == a2
+        assert a1 != a3
+        assert a1.__eq__(123) is NotImplemented
+
+    def test_repr_includes_type_and_children_count(self):
+        a = Asset(id="users", type="source", children=[Asset(id="id")])
+        rendered = repr(a)
+
+        assert rendered.startswith("Asset(")
+        assert "id='users'" in rendered
+        assert "type='source'" in rendered
+        assert "children=1" in rendered
+
+    def test_canonical_dict_serializes_basemodel_without_canonical_dict(self):
+        a = Asset(id="test", metadata={"owner": PlainModel(name="data")})
+        payload = a._canonical_dict()
+
+        assert payload["metadata"]["owner"] == {"name": "data"}
+
+    def test_canonical_dict_serializes_set_as_sorted_list(self):
+        a = Asset(id="test", metadata={"letters": {"b", "a"}})
+        payload = a._canonical_dict()
+
+        assert payload["metadata"]["letters"] == ["a", "b"]
