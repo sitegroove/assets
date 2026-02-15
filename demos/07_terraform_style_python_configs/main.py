@@ -4,10 +4,16 @@
 This demo shows a realistic project layout where assets are declared across
 multiple Python files as Pydantic models (configuration only).
 
-No runtime "resource creation" logic lives in the config files. They only
-declare metadata and lineage. The library's :meth:`FileDiscovery.load`
+No runtime "resource creation" logic lives in the config files.  They only
+declare metadata and lineage.  The library's :meth:`FileDiscovery.load`
 handles discovery, file caching, state reuse, and registration.  The
 consumer-provided ``TerraformConfigLoader`` handles Python module import.
+
+What you will learn:
+  - Declaring assets in standalone Python config files
+  - Loading them via a custom Loader + SourceGroup
+  - FileDiscovery handles caching so only changed files are re-parsed
+  - Graph traversal on the loaded assets
 
 Run:
     python demos/07_terraform_style_python_configs/main.py
@@ -30,8 +36,8 @@ class TerraformConfigLoader:
     """Imports Python config modules and extracts declared assets.
 
     Supported module shapes:
-    - ``ASSET = DataModel(...)``
-    - ``ASSETS = [DataModel(...), ...]``
+    - ``ASSET = Service(...)``
+    - ``ASSETS = [Service(...), ...]``
     """
 
     def __init__(self, deps: list[str] | None = None) -> None:
@@ -121,7 +127,7 @@ def main() -> None:
     print("\n[4] Lineage checks")
     print(f"Roots: {graph.roots()}")
     print(f"Leaves: {graph.leaves()}")
-    print(f"Downstream of raw.orders: {graph.descendants('raw.orders')}")
+    print(f"Downstream of user-db: {graph.descendants('user-db')}")
 
 
 if __name__ == "__main__":

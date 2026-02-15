@@ -1,96 +1,88 @@
 #!/usr/bin/env python3
 """Demo 3: Multi-Environment Workflow — copy-on-create, promotion.
 
-Shows how creating an environment copies the parent's state,
-after which the two are fully independent.  Promotion moves
-changes between environments via plan/apply.
+Uses **app configuration** as the domain: config entries like
+timeouts, feature toggles, and limits are managed across environments
+(production, staging, dev).
+
+What you will learn:
+  - Setting up multiple environments
+  - Copy-on-create: new environments start as a snapshot of the parent
+  - Making changes in a dev environment (isolated from production)
+  - Promoting changes:  dev -> staging -> production
+  - Destroying temporary environments
+  - Protected environments
 
 Run: python demos/03_multi_environment/main.py
 """
 
-import json
-import shutil
-import tempfile
-from pathlib import Path
-
 from assets import (
     Asset,
-    Project,
     Environment,
     EnvironmentConfig,
+    Project,
     SQLiteBackend,
 )
 
-
-class DataModel(Asset):
-    pass
-
-
 # ──────────────────────────────────────────────────────────────
-# Helper: consumer-driven loading
+# 1. Define asset type
 # ──────────────────────────────────────────────────────────────
 
 
-def load_json_models(project: Project, models_dir: Path) -> None:
-    """Discover, parse, and register JSON asset files."""
-    for path in sorted(models_dir.rglob("*.json")):
-        data = json.loads(path.read_text())
-        asset = DataModel.model_validate(data)
-        project.register(asset)
+class ConfigEntry(Asset):
+    """A single configuration entry (key/value with metadata)."""
+
+    value: str = ""
+    description: str = ""
 
 
 # ──────────────────────────────────────────────────────────────
-# 1. Set up project
+# 2. Helper: register the config entries we want
 # ──────────────────────────────────────────────────────────────
 
-tmpdir = tempfile.mkdtemp(prefix="assets_multi_env_")
-models_dir = Path(tmpdir) / "models"
-models_dir.mkdir()
 
-(models_dir / "users.json").write_text(
-    json.dumps(
-        {
-            "id": "raw.users",
-            "type": "source",
-            "tags": ["raw"],
-            "children": [
-                {"id": "user_id", "type": "column"},
-                {"id": "email", "type": "column"},
-            ],
-        }
+def register_base_config(project: Project) -> None:
+    """Register the baseline configuration entries."""
+    project.register(
+        ConfigEntry(
+            id="api.timeout_ms",
+            type="setting",
+            tags=["api", "performance"],
+            value="3000",
+            description="HTTP request timeout in milliseconds",
+        )
     )
-)
-(models_dir / "orders.json").write_text(
-    json.dumps(
-        {
-            "id": "raw.orders",
-            "type": "source",
-            "tags": ["raw"],
-            "children": [
-                {"id": "order_id", "type": "column"},
-                {"id": "amount", "type": "column"},
-            ],
-        }
+    project.register(
+        ConfigEntry(
+            id="api.rate_limit",
+            type="setting",
+            tags=["api", "security"],
+            value="100",
+            description="Max requests per minute per user",
+        )
     )
-)
-(models_dir / "staging_users.json").write_text(
-    json.dumps(
-        {
-            "id": "staging.users",
-            "type": "data_model",
-            "tags": ["staging"],
-            "sql": "SELECT * FROM raw.users",
-            "depends_on": ["raw.users"],
-            "children": [
-                {"id": "user_id", "type": "column"},
-                {"id": "email", "type": "column"},
-            ],
-        }
+    project.register(
+        ConfigEntry(
+            id="feature.dark_mode",
+            type="feature_flag",
+            tags=["frontend", "experiment"],
+            value="true",
+            description="Enable dark mode theme",
+        )
     )
-)
+    project.register(
+        ConfigEntry(
+            id="feature.new_search",
+            type="feature_flag",
+            tags=["search", "experiment"],
+            value="false",
+            description="New search algorithm",
+        )
+    )
+
 
 # ──────────────────────────────────────────────────────────────
-# 2. Configure environments
+# 3. Configure environments
 # ──────────────────────────────────────────────────────────────
 
 print("=== Environment Configuration ===\n")
@@ -113,24 +105,23 @@ manager = project.manager
 assert manager is not None
 
 print("Environments:")
-for name, env in config.environments.items():
+for name in config.environments:
     print(f"  {name}")
 
 # ──────────────────────────────────────────────────────────────
-# 3. Apply to production
+# 4. Apply baseline to production
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Apply to Production ===\n")
 
-project.clear()
-load_json_models(project, models_dir)
+register_base_config(project)
 plan = project.plan()
 print(plan.show())
 result = project.apply(plan)
 print(f"\nApplied to production: {result.created} created")
 
 # ──────────────────────────────────────────────────────────────
-# 4. Create dev environment (copy-on-create from production)
+# 5. Create dev environment (copy-on-create from production)
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Create Dev Environment (copy from production) ===\n")
@@ -140,36 +131,56 @@ print(f"Created: name={dev_env.name}")
 
 # Dev has a copy of production — plan should show no changes
 project.clear()
-load_json_models(project, models_dir)
+register_base_config(project)
 dev_plan = manager.plan(environment="dev_alice")
 print(f"Plan for dev_alice: has_changes={dev_plan.has_changes}")
 
 # ──────────────────────────────────────────────────────────────
-# 5. Make a change in dev (modify a file, re-plan, apply)
+# 6. Make a change in dev (modify config, re-plan, apply)
 # ──────────────────────────────────────────────────────────────
 
-print("\n=== Dev: Modify staging.users ===\n")
+print("\n=== Dev: Update Config ===\n")
 
-(models_dir / "staging_users.json").write_text(
-    json.dumps(
-        {
-            "id": "staging.users",
-            "type": "data_model",
-            "description": "Alice's improved staging users",
-            "tags": ["staging", "improved"],
-            "sql": "SELECT * FROM raw.users WHERE email IS NOT NULL",
-            "depends_on": ["raw.users"],
-            "children": [
-                {"id": "user_id", "type": "column"},
-                {"id": "email", "type": "column"},
-                {"id": "is_valid", "type": "column"},
-            ],
-        }
+project.clear()
+
+# Keep existing entries but change two values
+project.register(
+    ConfigEntry(
+        id="api.timeout_ms",
+        type="setting",
+        tags=["api", "performance"],
+        value="5000",  # changed: 3000 -> 5000
+        description="HTTP request timeout in milliseconds",
+    )
+)
+project.register(
+    ConfigEntry(
+        id="api.rate_limit",
+        type="setting",
+        tags=["api", "security"],
+        value="100",
+        description="Max requests per minute per user",
+    )
+)
+project.register(
+    ConfigEntry(
+        id="feature.dark_mode",
+        type="feature_flag",
+        tags=["frontend", "experiment"],
+        value="true",
+        description="Enable dark mode theme",
+    )
+)
+project.register(
+    ConfigEntry(
+        id="feature.new_search",
+        type="feature_flag",
+        tags=["search", "experiment"],
+        value="true",  # changed: false -> true
+        description="New search algorithm (Alice's experiment)",
     )
 )
 
-project.clear()
-load_json_models(project, models_dir)
 dev_plan2 = manager.plan(environment="dev_alice")
 print(dev_plan2.show())
 
@@ -177,35 +188,18 @@ dev_result = manager.apply(dev_plan2, environment="dev_alice")
 print(f"\nApplied to dev_alice: updated={dev_result.updated}")
 
 # ──────────────────────────────────────────────────────────────
-# 6. Production is still clean (unaffected by dev changes)
+# 7. Production is still clean (unaffected by dev changes)
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Production Still Clean ===\n")
 
-# Restore the original file for production plan
-(models_dir / "staging_users.json").write_text(
-    json.dumps(
-        {
-            "id": "staging.users",
-            "type": "data_model",
-            "tags": ["staging"],
-            "sql": "SELECT * FROM raw.users",
-            "depends_on": ["raw.users"],
-            "children": [
-                {"id": "user_id", "type": "column"},
-                {"id": "email", "type": "column"},
-            ],
-        }
-    )
-)
-
 project.clear()
-load_json_models(project, models_dir)
+register_base_config(project)
 prod_plan = manager.plan(environment="production")
 print(f"Production plan has_changes: {prod_plan.has_changes}")
 
 # ──────────────────────────────────────────────────────────────
-# 7. Promote dev_alice -> staging
+# 8. Promote dev_alice -> staging
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Promote dev_alice -> staging ===\n")
@@ -221,7 +215,7 @@ if promote_plan.has_changes:
     print(f"\nPromoted to staging: {promote_result.applied} change(s)")
 
 # ──────────────────────────────────────────────────────────────
-# 8. Promote staging -> production
+# 9. Promote staging -> production
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Promote staging -> production ===\n")
@@ -234,7 +228,7 @@ if promote_plan2.has_changes:
     print(f"\nPromoted to production: {promote_result2.applied} change(s)")
 
 # ──────────────────────────────────────────────────────────────
-# 9. Cleanup dev environment
+# 10. Cleanup
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Cleanup ===\n")
@@ -249,6 +243,3 @@ try:
     manager.destroy_environment("production")
 except ValueError as e:
     print(f"Cannot destroy production: {e}")
-
-shutil.rmtree(tmpdir)
-print(f"\nCleaned up {tmpdir}")

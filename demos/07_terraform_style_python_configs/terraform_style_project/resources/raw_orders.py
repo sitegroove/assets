@@ -1,20 +1,14 @@
-"""raw.orders source asset (declarative config)."""
+"""order-db: the order database (declarative config)."""
 
 from __future__ import annotations
 
-from project_models import Column, DataModel
+from project_models import Service
 
-ASSET = DataModel(
-    id="raw.orders",
-    type="source",
-    tags=["raw", "finance"],
+ASSET = Service(
+    id="order-db",
+    type="database",
+    tags=["infra", "storage"],
+    language="postgresql",
     owner_team="data-platform",
-    materialization="external",
-    children=[
-        Column(id="order_id", type="INTEGER"),
-        Column(id="user_id", type="INTEGER"),
-        Column(id="amount", type="DECIMAL"),
-        Column(id="status", type="VARCHAR"),
-        Column(id="ordered_at", type="TIMESTAMP"),
-    ],
+    port=5433,
 )

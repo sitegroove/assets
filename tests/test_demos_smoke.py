@@ -48,12 +48,12 @@ def _has_module(name: str) -> bool:
         (
             "demos/05_lineage_resolver/main.py",
             [],
-            "Column-Level Dependencies",
+            "Field-Level Dependencies",
         ),
         (
-            "demos/06_ecommerce_platform/main.py",
-            ["yaml"],
-            "Step 10: Metrics catalog",
+            "demos/06_ml_pipeline/main.py",
+            [],
+            "Done!",
         ),
         (
             "demos/07_terraform_style_python_configs/main.py",

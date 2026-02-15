@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from assets import Asset, AssetField
 
 
-class Owner(Asset):
-    team: str = ""
-    email: str = ""
+class Service(Asset):
+    """A microservice declared as a Python config object."""
 
-
-class Column(Asset):
-    type: str = ""
-    pii: bool = False
-
-
-class DataModel(Asset):
-    materialization: str = "view"
     owner_team: str = ""
-    row_count: int = AssetField(default=0, fingerprint=False)
+    language: str = "python"
+    port: int = 8080
+    replicas: int = cast(int, AssetField(default=1, fingerprint=False))

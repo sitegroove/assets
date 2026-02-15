@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """Demo 1: Core Basics — defining assets, fingerprinting, and graph queries.
 
+Uses a **microservices catalog** as the domain: services expose
+endpoints, and services depend on other services.  No SQL anywhere.
+
+What you will learn:
+  - How to define custom Asset subclasses with Pydantic fields
+  - How children work (endpoints nested inside a service)
+  - Fingerprinting — what counts and what doesn't
+  - The dependency graph and how to traverse it
+  - Selectors — filter assets by tag, type, name, or graph position
+
 Run: python demos/01_core_basics/main.py
 """
 
@@ -9,25 +19,36 @@ from typing import cast
 from assets import Asset, AssetField, Project
 
 # ──────────────────────────────────────────────────────────────
-# 1. Define a custom asset type
+# 1. Define custom asset types
 # ──────────────────────────────────────────────────────────────
 
 
-class Column(Asset):
-    type: str = ""
-    description: str = ""
-    pii: bool = False
+class Endpoint(Asset):
+    """A single API endpoint exposed by a service."""
+
+    method: str = "GET"
+    path: str = ""
+    public: bool = False
 
 
-class DataModel(Asset):
-    """A data model with sql, columns, and a non-fingerprinted row_count."""
+class Service(Asset):
+    """A microservice in our platform.
 
-    sql: str | None = None
-    columns: list[Column] = cast(
-        list[Column],
+    ``endpoints`` is marked ``children=True`` so each endpoint
+    becomes a nested child asset with an auto-generated path
+    like ``endpoints/list-users``.
+
+    ``instance_count`` uses ``fingerprint=False`` — changing it
+    will NOT count as a "real" change during plan/apply.
+    """
+
+    language: str = "python"
+    owner: str = ""
+    endpoints: list[Endpoint] = cast(
+        list[Endpoint],
         AssetField(default_factory=list, children=True),
     )
-    row_count: int = cast(int, AssetField(default=0, fingerprint=False))
+    instance_count: int = cast(int, AssetField(default=1, fingerprint=False))
 
 
 # ──────────────────────────────────────────────────────────────
@@ -36,76 +57,69 @@ class DataModel(Asset):
 
 project = Project()
 
-# Raw source — no SQL, no dependencies
+# A standalone database — no upstream dependencies
 project.register(
-    DataModel(
-        id="raw.users",
-        type="source",
-        tags=["raw", "pii"],
-        columns=[
-            Column(id="user_id", type="INTEGER"),
-            Column(id="email", type="VARCHAR", pii=True),
-            Column(id="created_at", type="TIMESTAMP"),
+    Service(
+        id="postgres",
+        type="database",
+        tags=["infra", "storage"],
+        language="sql",
+    )
+)
+
+# User service depends on the database
+project.register(
+    Service(
+        id="user-service",
+        type="backend",
+        tags=["core", "auth"],
+        owner="team-identity",
+        depends_on=["postgres"],
+        endpoints=[
+            Endpoint(id="list-users", method="GET", path="/users"),
+            Endpoint(id="create-user", method="POST", path="/users", public=True),
         ],
     )
 )
 
+# Order service depends on the database and user-service
 project.register(
-    DataModel(
-        id="raw.payments",
-        type="source",
-        tags=["raw", "finance"],
-        columns=[
-            Column(id="payment_id", type="INTEGER"),
-            Column(id="user_id", type="INTEGER"),
-            Column(id="amount", type="DECIMAL"),
+    Service(
+        id="order-service",
+        type="backend",
+        tags=["core", "commerce"],
+        owner="team-commerce",
+        depends_on=["postgres", "user-service"],
+        endpoints=[
+            Endpoint(id="list-orders", method="GET", path="/orders"),
+            Endpoint(id="place-order", method="POST", path="/orders", public=True),
         ],
     )
 )
 
-# Staging model — depends on raw.users (consumer sets depends_on explicitly)
+# Notification service depends on user-service
 project.register(
-    DataModel(
-        id="staging.users",
-        type="data_model",
-        tags=["staging", "pii"],
-        sql=(
-            "SELECT u.user_id, LOWER(TRIM(u.email)) AS email_clean, u.created_at "
-            "FROM raw.users u "
-            "WHERE u.created_at IS NOT NULL"
-        ),
-        depends_on=["raw.users"],
-        columns=[
-            Column(id="user_id", type="INTEGER"),
-            Column(
-                id="email_clean",
-                type="VARCHAR",
-                description="Lowercased, trimmed",
-                pii=True,
-            ),
-            Column(id="created_at", type="TIMESTAMP"),
+    Service(
+        id="notification-service",
+        type="backend",
+        tags=["support"],
+        owner="team-platform",
+        depends_on=["user-service"],
+        endpoints=[
+            Endpoint(id="send-email", method="POST", path="/notify/email"),
         ],
     )
 )
 
-# Mart model — depends on both staging.users and raw.payments
+# Web frontend depends on user-service and order-service
 project.register(
-    DataModel(
-        id="mart.user_spending",
-        type="data_model",
-        tags=["mart", "finance"],
-        sql=(
-            "SELECT u.user_id, u.email_clean, SUM(p.amount) AS total_spent "
-            "FROM staging.users u "
-            "JOIN raw.payments p ON u.user_id = p.user_id "
-            "GROUP BY u.user_id, u.email_clean"
-        ),
-        depends_on=["staging.users", "raw.payments"],
-        columns=[
-            Column(id="user_id", type="INTEGER"),
-            Column(id="email_clean", type="VARCHAR"),
-            Column(id="total_spent", type="DECIMAL"),
-        ],
+    Service(
+        id="web-frontend",
+        type="frontend",
+        tags=["web"],
+        language="typescript",
+        owner="team-web",
+        depends_on=["user-service", "order-service"],
     )
 )
 
@@ -115,36 +129,35 @@ project.register(
 
 print("=== Fingerprinting ===\n")
 
-user_model = project.get("raw.users")
-print(f"raw.users fingerprint: {user_model.fingerprint[:16]}...")
+svc = project.get("user-service")
+assert svc is not None
+print(f"user-service fingerprint: {svc.fingerprint[:16]}...")
 
-# row_count is fingerprint=False — changing it doesn't change the hash
-m1 = DataModel(id="test", row_count=0)
-m2 = DataModel(id="test", row_count=999_999)
-print(f"row_count=0 fingerprint:      {m1.fingerprint[:16]}...")
-print(f"row_count=999999 fingerprint:  {m2.fingerprint[:16]}...")
-print(f"Same fingerprint? {m1.fingerprint == m2.fingerprint}")
+# instance_count is fingerprint=False — changing it doesn't change the hash
+s1 = Service(id="test-svc", instance_count=1)
+s2 = Service(id="test-svc", instance_count=100)
+print(f"instance_count=1   fingerprint: {s1.fingerprint[:16]}...")
+print(f"instance_count=100 fingerprint: {s2.fingerprint[:16]}...")
+print(f"Same fingerprint? {s1.fingerprint == s2.fingerprint}")
 
-# But changing a fingerprinted field does change the hash
-m3 = DataModel(id="test", type="changed")
-print(f"type='changed' fingerprint:    {m3.fingerprint[:16]}...")
-print(f"Same as original? {m1.fingerprint == m3.fingerprint}")
+# Changing a fingerprinted field DOES change the hash
+s3 = Service(id="test-svc", language="go")
+print(f"language='go'      fingerprint: {s3.fingerprint[:16]}...")
+print(f"Same as original? {s1.fingerprint == s3.fingerprint}")
 
 # ──────────────────────────────────────────────────────────────
-# 4. Dependencies (consumer-declared)
+# 4. Dependencies
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Dependencies ===\n")
 
-staging_users = project.get("staging.users")
-print(f"staging.users depends_on: {staging_users.depends_on}")
+order_svc = project.get("order-service")
+assert order_svc is not None
+print(f"order-service depends_on: {order_svc.depends_on}")
 
-mart = project.get("mart.user_spending")
-print(f"mart.user_spending depends_on: {mart.depends_on}")
-
-print(f"\nAll dependencies ({len(project.registry.dependencies)}):")
+print(f"\nAll dependency edges ({len(project.registry.dependencies)}):")
 for dep in project.registry.dependencies:
-    print(f"  {dep.source} -> {dep.target} (type={dep.type})")
+    print(f"  {dep.source} -> {dep.target}")
 
 # ──────────────────────────────────────────────────────────────
 # 5. Graph traversal
@@ -154,17 +167,17 @@ print("\n=== Graph Traversal ===\n")
 
 graph = project.graph
 print(f"Graph has {len(graph)} assets")
-print(f"Roots (no upstream): {graph.roots()}")
+print(f"Roots (no upstream):   {graph.roots()}")
 print(f"Leaves (no downstream): {graph.leaves()}")
 
-print(f"\nAncestors of mart.user_spending: {graph.ancestors('mart.user_spending')}")
-print(f"Descendants of raw.users: {graph.descendants('raw.users')}")
+print(f"\nAncestors of web-frontend:  {graph.ancestors('web-frontend')}")
+print(f"Descendants of postgres:    {graph.descendants('postgres')}")
 
 # Depth-limited traversal
-depth1_ancestors = graph.ancestors("mart.user_spending", max_depth=1)
-print(f"Ancestors of mart.user_spending (depth=1): {depth1_ancestors}")
+depth1 = graph.ancestors("web-frontend", max_depth=1)
+print(f"Ancestors of web-frontend (depth=1): {depth1}")
 
-# Topological sort
+# Topological sort — a valid execution order
 print(f"\nTopological order: {graph.topological_sort()}")
 
 # ──────────────────────────────────────────────────────────────
@@ -174,50 +187,57 @@ print(f"\nTopological order: {graph.topological_sort()}")
 print("\n=== Selectors ===\n")
 
 # By tag
-pii = project.select("tag:pii")
-print(f"tag:pii -> {pii.names}")
+core = project.select("tag:core")
+print(f"tag:core -> {core.names}")
 
-# By kind
-sources = project.select("type:source")
-print(f"type:source -> {sources.names}")
+# By type
+backends = project.select("type:backend")
+print(f"type:backend -> {backends.names}")
 
 # Wildcard
-raw = project.select("raw.*")
-print(f"raw.* -> {raw.names}")
+all_services = project.select("*-service")
+print(f"*-service -> {all_services.names}")
 
-# Upstream expansion
-upstream = project.select("+mart.user_spending")
-print(f"+mart.user_spending (asset + all ancestors) -> {upstream.names}")
+# Upstream expansion — the asset plus all its ancestors
+upstream = project.select("+web-frontend")
+print(f"+web-frontend (all ancestors) -> {upstream.names}")
 
-# Downstream expansion
-downstream = project.select("raw.users+")
-print(f"raw.users+ (asset + all descendants) -> {downstream.names}")
+# Downstream expansion — the asset plus all its descendants
+downstream = project.select("postgres+")
+print(f"postgres+ (all descendants) -> {downstream.names}")
 
 # Depth-limited
-depth1 = project.select("raw.users+1")
-print(f"raw.users+1 (descendants depth=1) -> {depth1.names}")
+depth1_sel = project.select("postgres+1")
+print(f"postgres+1 (descendants depth=1) -> {depth1_sel.names}")
 
-# Intersection
-intersect = project.select("tag:pii,type:data_model")
-print(f"tag:pii,type:data_model (AND) -> {intersect.names}")
+# Intersection (AND)
+intersect = project.select("tag:core,type:backend")
+print(f"tag:core,type:backend (AND) -> {intersect.names}")
+
+# Exclude
+excluded = project.select("type:backend", exclude="tag:support")
+print(f"type:backend exclude tag:support -> {excluded.names}")
 
 # ──────────────────────────────────────────────────────────────
-# 7. Nested asset introspection
+# 7. Nested asset introspection (children)
 # ──────────────────────────────────────────────────────────────
 
 print("\n=== Nested Asset Introspection ===\n")
 
-staging = project.get("staging.users")
-kids = staging.children()
-print(f"staging.users children: {[c.id for c in kids]}")
+user_svc = project.get("user-service")
+assert user_svc is not None
+kids = user_svc.children()
+print(f"user-service children: {[c.id for c in kids]}")
 
-email_col = staging.child("columns/email_clean")
-print(f"  email_clean.type: {email_col.type}")
-print(f"  email_clean.pii: {email_col.pii}")
-print(f"  email_clean.description: {email_col.description}")
+create_ep = user_svc.child("endpoints/create-user")
+assert create_ep is not None
+create_ep = cast(Endpoint, create_ep)
+print(f"  create-user method: {create_ep.method}")
+print(f"  create-user path:   {create_ep.path}")
+print(f"  create-user public: {create_ep.public}")
 
-# Child not found
-missing = staging.child("columns/nonexistent")
-print(f"  child('columns/nonexistent'): {missing}")
+# Child not found returns None
+missing = user_svc.child("endpoints/nonexistent")
+print(f"  child('endpoints/nonexistent'): {missing}")
 
 print("\nDone!")

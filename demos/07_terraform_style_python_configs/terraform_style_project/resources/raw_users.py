@@ -1,19 +1,14 @@
-"""raw.users source asset (declarative config)."""
+"""user-db: the primary user database (declarative config)."""
 
 from __future__ import annotations
 
-from project_models import Column, DataModel
+from project_models import Service
 
-ASSET = DataModel(
-    id="raw.users",
-    type="source",
-    tags=["raw", "pii"],
+ASSET = Service(
+    id="user-db",
+    type="database",
+    tags=["infra", "storage"],
+    language="postgresql",
     owner_team="data-platform",
-    materialization="external",
-    children=[
-        Column(id="user_id", type="INTEGER"),
-        Column(id="email", type="VARCHAR", pii=True),
-        Column(id="country", type="VARCHAR"),
-        Column(id="created_at", type="TIMESTAMP"),
-    ],
+    port=5432,
 )

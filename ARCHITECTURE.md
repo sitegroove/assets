@@ -444,23 +444,26 @@ tests/
 
 demos/
 ├── 01_core_basics/
-│   └── main.py              # Project, fingerprinting, graph, selectors, nested children
+│   └── main.py              # Microservices catalog: fingerprinting, graph, selectors, children
 ├── 02_plan_apply_workflow/
-│   └── main.py              # Plan/apply/modify lifecycle
+│   └── main.py              # Feature flags: plan/apply/modify lifecycle
 ├── 03_multi_environment/
-│   └── main.py              # Copy-on-create envs, promotion
+│   └── main.py              # App config: copy-on-create envs, promotion
 ├── 04_custom_loader/
-│   └── main.py              # Consumer-driven YAML+SQL loading with FileDiscovery + FileIndex
+│   └── main.py              # YAML service manifests via custom Loader + FileDiscovery
 ├── 05_lineage_resolver/
-│   └── main.py              # Custom DependencyResolver implementation
-├── 06_ecommerce_platform/
-│   └── main.py              # Full e-commerce platform with sqlglot dependency resolution
+│   └── main.py              # API contract field-level DependencyResolver
+├── 06_ml_pipeline/
+│   └── main.py              # ML pipeline catalog with impact analysis + drift
 ├── 07_terraform_style_python_configs/
 │   ├── main.py              # Terraform-style Python config workflow
-│   └── terraform_style_project/ # Multi-file config-only resource declarations
-└── 08_fake_google_cloud_resources/
-    ├── main.py              # Fake GCP config-only resources workflow
-    └── gcp_config_project/  # Multi-file GCP resource declarations
+│   └── terraform_style_project/ # Multi-file config-only service declarations
+├── 08_infra_as_code/
+│   ├── main.py              # Multi-root infrastructure-as-code workflow
+│   └── project/ + shared_infra/ # Multi-file infra resource declarations
+└── 09_data_transformation/
+    ├── main.py              # dbt-style SQL + Jinja + lineage workflow
+    └── project/ + modules/  # Multi-root analytics project + package module
 
 benchmarks/
 ├── bench_500_assets.py      # SQLite(:memory:) vs SQLite(file) performance benchmarks

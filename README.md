@@ -403,15 +403,15 @@ For internal architecture, data flow, and low-level APIs, see
 
 | Demo | Description | Complexity |
 |---|---|---|
-| `demos/01_core_basics` | Defining assets, fingerprinting, graph queries, selectors | Beginner |
-| `demos/02_plan_apply_workflow` | Terraform-style plan/apply lifecycle | Beginner |
-| `demos/03_multi_environment` | Copy-on-create dev environments and promotion | Intermediate |
-| `demos/04_custom_loader` | Consumer-driven YAML+SQL loading with `SourceGroup` | Intermediate |
-| `demos/05_lineage_resolver` | Custom field-level dependency resolver | Intermediate |
-| `demos/06_ecommerce_platform` | Full e-commerce analytics architecture | Advanced |
-| `demos/07_terraform_style_python_configs` | Terraform-style Python configuration project | Intermediate |
-| `demos/08_infra_as_code` | Multi-root infrastructure as code workflow | Advanced |
-| `demos/09_data_transformation` | dbt-style data transformation architecture | Advanced |
+| `demos/01_core_basics` | Microservices catalog: assets, fingerprinting, graph, selectors | Beginner |
+| `demos/02_plan_apply_workflow` | Feature flags: plan/apply lifecycle with creates, updates, deletes | Beginner |
+| `demos/03_multi_environment` | App config: copy-on-create environments and promotion | Intermediate |
+| `demos/04_custom_loader` | YAML service manifests: custom Loader + FileDiscovery | Intermediate |
+| `demos/05_lineage_resolver` | API contracts: custom field-level dependency resolver | Intermediate |
+| `demos/06_ml_pipeline` | ML pipeline: rich domain models, impact analysis, drift | Intermediate |
+| `demos/07_terraform_style_python_configs` | Python config files: Terraform-style project layout | Intermediate |
+| `demos/08_infra_as_code` | Cloud infrastructure: multi-root discovery workflow | Advanced |
+| `demos/09_data_transformation` | Analytics: dbt-style SQL + Jinja + column lineage | Advanced |
 
 ## License
 
