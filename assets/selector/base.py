@@ -38,9 +38,17 @@ class Selector(ABC):
         self,
         selector: str,
         *,
+        exclude: str | None = None,
         environment: str | None = None,
     ) -> SelectionResult:
-        """Execute a selector expression and return matching assets."""
+        """Execute a selector expression and return matching assets.
+
+        Args:
+            selector: The selector expression to evaluate.
+            exclude: Optional selector expression whose matches are
+                subtracted from the result (like dbt ``--exclude``).
+            environment: Environment name for ``state:`` terms.
+        """
 
     # ── State helpers available to all subclasses ─────────────
 

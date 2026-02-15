@@ -52,6 +52,7 @@ class GraphSelector(Selector):
         self,
         selector: str,
         *,
+        exclude: str | None = None,
         environment: str | None = None,
     ) -> SelectionResult:
         """Parse a selector string and return matching assets.
@@ -73,8 +74,28 @@ class GraphSelector(Selector):
             state:modified+     — modified + their descendants
             +state:modified     — modified + their ancestors
             state:modified,tag:pii — intersection of modified AND tagged pii
+
+        The ``exclude`` parameter accepts the same selector syntax.
+        Matches from the exclude expression are subtracted from the
+        main result (like dbt ``--exclude``).
         """
-        # Comma-separated = intersection (AND)
+        result = self._execute_select(selector, environment=environment)
+
+        if exclude:
+            exclude_result = self._execute_select(exclude, environment=environment)
+            result = self._subtract(result, exclude_result)
+
+        return result
+
+    # ── Internal dispatch ────────────────────────────────────
+
+    def _execute_select(
+        self,
+        selector: str,
+        *,
+        environment: str | None = None,
+    ) -> SelectionResult:
+        """Resolve a selector expression to a SelectionResult."""
         parts = [p.strip() for p in selector.split(",")]
         if not any(parts):
             return SelectionResult(warnings=["Selector is empty."])
@@ -85,6 +106,20 @@ class GraphSelector(Selector):
             return self._execute_multi(parts, environment=environment)
 
         return self._resolve(parts[0])
+
+    @staticmethod
+    def _subtract(
+        result: SelectionResult,
+        exclude: SelectionResult,
+    ) -> SelectionResult:
+        """Subtract exclude matches from result."""
+        remaining = result.names - exclude.names
+        assets = [a for a in result.assets if a.id in remaining]
+        return SelectionResult(
+            assets=assets,
+            names=remaining,
+            warnings=result.warnings + exclude.warnings,
+        )
 
     # ── Internal dispatch ────────────────────────────────────
 

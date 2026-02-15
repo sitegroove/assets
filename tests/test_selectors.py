@@ -130,3 +130,89 @@ class TestSelectors:
         result = GraphSelector(registry).execute("+1asset")
         assert result.names == {"1asset"}
         assert any("+<digit>" in warning for warning in result.warnings)
+
+
+class TestSelectorExclude:
+    """Tests for the exclude parameter on selectors."""
+
+    def test_exclude_exact_name(self, populated_registry: Registry):
+        result = GraphSelector(populated_registry).execute(
+            "tag:raw", exclude="raw.payments"
+        )
+        assert result.names == {"raw.users"}
+
+    def test_exclude_by_tag(self, populated_registry: Registry):
+        # Select all data_models, exclude staging-tagged
+        result = GraphSelector(populated_registry).execute(
+            "type:data_model", exclude="tag:staging"
+        )
+        assert result.names == {"mart.enriched"}
+
+    def test_exclude_by_wildcard(self, populated_registry: Registry):
+        # Select everything raw.*, exclude raw.payments
+        result = GraphSelector(populated_registry).execute(
+            "raw.*", exclude="raw.payments"
+        )
+        assert result.names == {"raw.users"}
+
+    def test_exclude_with_graph_traversal(self, populated_registry: Registry):
+        # Select raw.users and all descendants, exclude mart.*
+        result = GraphSelector(populated_registry).execute(
+            "raw.users+", exclude="mart.*"
+        )
+        assert "raw.users" in result.names
+        assert "staging.users" in result.names
+        assert "mart.enriched" not in result.names
+
+    def test_exclude_intersection(self, populated_registry: Registry):
+        # Exclude supports comma-separated intersection
+        # Select all data_models, exclude (staging AND pii)
+        result = GraphSelector(populated_registry).execute(
+            "type:data_model", exclude="tag:staging,tag:pii"
+        )
+        # staging.users has both tags, so excluded
+        # staging.payments has staging but not pii, so NOT excluded
+        # mart.enriched has neither, so NOT excluded
+        assert result.names == {"staging.payments", "mart.enriched"}
+
+    def test_exclude_removes_nothing_when_no_overlap(
+        self, populated_registry: Registry
+    ):
+        result = GraphSelector(populated_registry).execute(
+            "tag:raw", exclude="tag:mart"
+        )
+        assert result.names == {"raw.users", "raw.payments"}
+
+    def test_exclude_removes_everything(self, populated_registry: Registry):
+        result = GraphSelector(populated_registry).execute("tag:raw", exclude="tag:raw")
+        assert result.names == set()
+        assert result.assets == []
+
+    def test_exclude_nonexistent_is_noop(self, populated_registry: Registry):
+        result = GraphSelector(populated_registry).execute(
+            "tag:raw", exclude="nonexistent"
+        )
+        assert result.names == {"raw.users", "raw.payments"}
+
+    def test_exclude_none_is_noop(self, populated_registry: Registry):
+        result = GraphSelector(populated_registry).execute("tag:raw", exclude=None)
+        assert result.names == {"raw.users", "raw.payments"}
+
+    def test_exclude_multiple_exact_names(self, populated_registry: Registry):
+        # Exclude with intersection — only items matching ALL terms excluded
+        # This excludes nothing since no single asset is both raw.users
+        # AND raw.payments
+        result = GraphSelector(populated_registry).execute(
+            "tag:raw", exclude="raw.users,raw.payments"
+        )
+        # Intersection of {raw.users} & {raw.payments} = empty, so nothing excluded
+        assert result.names == {"raw.users", "raw.payments"}
+
+    def test_exclude_via_type(self, populated_registry: Registry):
+        # Select everything via wildcard, exclude sources
+        result = GraphSelector(populated_registry).execute("*", exclude="type:source")
+        assert result.names == {
+            "staging.users",
+            "staging.payments",
+            "mart.enriched",
+        }

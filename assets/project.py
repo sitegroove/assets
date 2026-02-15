@@ -99,10 +99,21 @@ class Project:
         """Clear all registered assets and dependencies."""
         self._registry.clear()
 
-    def select(self, selector: str) -> SelectionResult:
-        """Execute a selector expression (graph, state, or combined)."""
+    def select(
+        self,
+        selector: str,
+        *,
+        exclude: str | None = None,
+    ) -> SelectionResult:
+        """Execute a selector expression (graph, state, or combined).
+
+        Args:
+            selector: Selector expression to evaluate.
+            exclude: Optional selector expression whose matches are
+                subtracted from the result (like dbt ``--exclude``).
+        """
         return GraphSelector(self._registry, manager=self._manager).execute(
-            selector, environment=self.environment
+            selector, exclude=exclude, environment=self.environment
         )
 
     def add_resolver(self, name: str, resolver: DependencyResolver) -> None:

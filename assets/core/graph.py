@@ -11,23 +11,21 @@ import hashlib
 import json
 import threading
 from collections import defaultdict, deque
-from typing import TYPE_CHECKING, Any
-
-from pydantic import BaseModel, Field
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from assets.core.asset import Asset
     from assets.core.dependency import Dependency
 
 
-class SelectionResult(BaseModel):
+@dataclass
+class SelectionResult:
     """Result of a selector query."""
 
-    assets: list[Any] = Field(
-        default_factory=list
-    )  # Typed as Any to avoid circular import; contains Asset instances
-    names: set[str] = Field(default_factory=set)
-    warnings: list[str] = Field(default_factory=list)
+    assets: list[Asset] = field(default_factory=list)
+    names: set[str] = field(default_factory=set)
+    warnings: list[str] = field(default_factory=list)
 
 
 class AssetGraph:

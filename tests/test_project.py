@@ -56,6 +56,17 @@ class TestAssetsFacade:
         assert result.names == set()
         assert any("requires a StateManager" in w for w in result.warnings)
 
+    def test_select_with_exclude(self) -> None:
+        project = Project()
+        project.register(Asset(id="raw.users", type="source", tags=["raw"]))
+        project.register(Asset(id="raw.events", type="source", tags=["raw"]))
+        project.register(
+            Asset(id="staging.users", type="data_model", tags=["staging"]),
+        )
+
+        result = project.select("type:source", exclude="raw.events")
+        assert result.names == {"raw.users"}
+
     def test_plan_apply_with_default_environment(self, tmp_path) -> None:
         project = Project(state_dir=str(tmp_path / ".assets_state"))
         project.register(Asset(id="raw.users", type="source", tags=["raw"]))
