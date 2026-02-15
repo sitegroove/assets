@@ -46,6 +46,7 @@ from assets import (
     Environment,
     EnvironmentConfig,
     FieldMapping,
+    GraphSelector,
     Registry,
     SQLiteBackend,
     StateManager,
@@ -785,6 +786,8 @@ def main() -> None:
     print("  Step 3: Selectors")
     print(f"{'─' * 70}")
 
+    selector_engine = GraphSelector(registry)
+
     for selector in [
         "tag:pii",
         "type:mart",
@@ -792,7 +795,7 @@ def main() -> None:
         "+mart.revenue",
         "tag:finance,type:mart",
     ]:
-        result_sel = registry.select(selector)
+        result_sel = selector_engine.execute(selector)
         print(f"  {selector:<30} → {sorted(result_sel.names)}")
 
     # ── Step 4: Nested asset introspection ──

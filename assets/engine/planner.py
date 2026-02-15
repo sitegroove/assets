@@ -20,6 +20,32 @@ class Plan(BaseModel):
     def has_changes(self) -> bool:
         return bool(self.changeset.asset_changes or self.changeset.dependency_changes)
 
+    @property
+    def changed_ids(self) -> set[str]:
+        """All asset IDs with any change (create, update, or delete)."""
+        return {c.asset_id for c in self.changeset.asset_changes}
+
+    @property
+    def created_ids(self) -> set[str]:
+        """Asset IDs that will be created."""
+        return {
+            c.asset_id for c in self.changeset.asset_changes if c.action == "create"
+        }
+
+    @property
+    def updated_ids(self) -> set[str]:
+        """Asset IDs that will be updated."""
+        return {
+            c.asset_id for c in self.changeset.asset_changes if c.action == "update"
+        }
+
+    @property
+    def deleted_ids(self) -> set[str]:
+        """Asset IDs that will be deleted."""
+        return {
+            c.asset_id for c in self.changeset.asset_changes if c.action == "delete"
+        }
+
     def __repr__(self) -> str:
         n = len(self.changeset.asset_changes)
         return f"Plan(environment={self.environment!r}, changes={n})"

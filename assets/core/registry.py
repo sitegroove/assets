@@ -3,8 +3,7 @@
 Thread-safe: all mutations and the lazy graph property are guarded
 by an ``RLock``.  ``RLock`` (not ``Lock``) is used because public
 methods like ``register_many`` call internal helpers that also need
-the lock, and ``select`` / ``resolve`` read the graph while holding
-the lock.
+the lock, and ``resolve`` reads the graph while holding the lock.
 
 Read-only methods (``get``, ``all``, ``__len__``, ``__contains__``)
 acquire the same lock to guarantee a consistent snapshot.
@@ -17,7 +16,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from assets.core.dependency import Dependency, FieldMapping
-from assets.core.graph import AssetGraph, SelectionResult
+from assets.core.graph import AssetGraph
 
 if TYPE_CHECKING:
     from assets.core.asset import Asset
@@ -247,10 +246,6 @@ class Registry:
                 self._graph = AssetGraph.build(self._assets, self._dependencies)
             return self._graph
 
-    def select(self, selector: str) -> SelectionResult:
-        """Query assets by selector expression."""
-        return self.graph.select(selector)
-
     # ── Export ────────────────────────────────────────────────────
 
     def to_dict(self) -> dict[str, Any]:
@@ -308,7 +303,9 @@ class Registry:
             if asset:
                 targets = [asset]
         elif selector:
-            result = self.select(selector)
+            from assets.selector.parser import GraphSelector
+
+            result = GraphSelector(self).execute(selector)
             targets = result.assets
         else:
             raise ValueError("Provide either asset_id or selector")

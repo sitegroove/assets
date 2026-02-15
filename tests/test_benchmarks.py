@@ -21,6 +21,7 @@ from assets.core.dependency import Dependency
 from assets.core.graph import AssetGraph
 from assets.core.registry import Registry
 from assets.engine.differ import Differ
+from assets.selector.parser import GraphSelector
 from assets.state.models import AssetState, StateSnapshot
 from assets.state.sqlite import SQLiteBackend
 
@@ -55,6 +56,14 @@ def graph_10k(assets_10k: tuple[list[Asset], list[Dependency]]) -> AssetGraph:
     assets, deps = assets_10k
     asset_dict = {a.id: a for a in assets}
     return AssetGraph.build(asset_dict, deps)
+
+
+@pytest.fixture(scope="module")
+def registry_10k(assets_10k: tuple[list[Asset], list[Dependency]]) -> Registry:
+    assets, _ = assets_10k
+    registry = Registry()
+    registry.register_many(assets)
+    return registry
 
 
 # ── Asset.fingerprint ────────────────────────────────────────
@@ -284,10 +293,11 @@ def test_bench_save_incremental_10k(
 
 def test_bench_selector_tag_10k(
     benchmark: pytest.fixture,
-    graph_10k: AssetGraph,
+    registry_10k: Registry,
 ) -> None:
     """Select by tag on a 10K-asset graph (indexed O(1) lookup)."""
-    benchmark(lambda: graph_10k.select("tag:pii"))
+    selector = GraphSelector(registry_10k)
+    benchmark(lambda: selector.execute("tag:pii"))
 
 
 # ── Topological sort (cached) ────────────────────────────────

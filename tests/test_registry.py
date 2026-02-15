@@ -2,7 +2,7 @@
 
 import pytest
 
-from assets import Asset, FieldMapping, Registry
+from assets import Asset, FieldMapping, GraphSelector, Registry
 from assets.resolver.lineage import DependencyResolver
 
 
@@ -83,7 +83,7 @@ class TestRegistry:
         assert g1 is not g2
 
     def test_select(self, populated_registry: Registry):
-        result = populated_registry.select("tag:pii")
+        result = GraphSelector(populated_registry).execute("tag:pii")
         assert "staging.users" in result.names
 
     def test_register_overwrite(self, registry: Registry):

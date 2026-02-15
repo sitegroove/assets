@@ -21,7 +21,9 @@ from assets.loader.discovery import (
     SourceGroup,
 )
 from assets.resolver.lineage import DependencyResolver
-from assets.selector.parser import SelectorParser
+from assets.selector.base import Selector
+from assets.selector.parser import GraphSelector, SelectorParser
+from assets.selector.state import StateSelector
 from assets.state.backend import StateBackend
 from assets.state.environment import Environment, EnvironmentConfig
 from assets.state.models import (
@@ -57,7 +59,10 @@ __all__ = [
     # Resolver
     "DependencyResolver",
     # Selector
+    "GraphSelector",
+    "Selector",
     "SelectorParser",
+    "StateSelector",
     # State
     "AssetState",
     "DependencyState",

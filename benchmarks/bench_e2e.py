@@ -35,6 +35,7 @@ from generate import generate_assets
 from assets.core.graph import AssetGraph
 from assets.core.registry import Registry
 from assets.engine.differ import Differ
+from assets.selector.parser import GraphSelector
 from assets.state.models import AssetState, StateSnapshot
 from assets.state.sqlite import SQLiteBackend
 
@@ -120,7 +121,8 @@ def run_benchmark(n: int, tmp_dir: Path) -> dict:
     results["topo_sort_cached"] = stats
 
     # 5. Selector (indexed)
-    stats = _timed(lambda: fresh_graph.select("tag:pii"), "select_tag")
+    selector = GraphSelector(registry)
+    stats = _timed(lambda: selector.execute("tag:pii"), "select_tag")
     print(f"  select tag:pii:  {stats['median_ms']:>8.1f}ms")
     results["select_tag"] = stats
 

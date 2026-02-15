@@ -16,6 +16,7 @@ from assets.core.dependency import Dependency
 from assets.core.graph import AssetGraph
 from assets.core.registry import Registry
 from assets.index.file import MtimeCache
+from assets.selector.parser import GraphSelector
 
 
 # ── Registry concurrency ────────────────────────────────────
@@ -138,9 +139,10 @@ class TestRegistryConcurrency:
 
         results: list[int] = []
         lock = threading.Lock()
+        selector = GraphSelector(registry)
 
         def do_select() -> None:
-            r = registry.select("tag:important")
+            r = selector.execute("tag:important")
             with lock:
                 results.append(len(r.names))
 

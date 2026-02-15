@@ -91,3 +91,17 @@ class TestPlan:
         )
         plan = Plan(changeset=cs, environment="dev")
         assert plan.has_changes
+
+    def test_change_id_helpers(self):
+        cs = ChangeSet(
+            asset_changes=[
+                Change(action="create", asset_id="new"),
+                Change(action="update", asset_id="mod"),
+                Change(action="delete", asset_id="old"),
+            ]
+        )
+        plan = Plan(changeset=cs, environment="dev")
+        assert plan.changed_ids == {"new", "mod", "old"}
+        assert plan.created_ids == {"new"}
+        assert plan.updated_ids == {"mod"}
+        assert plan.deleted_ids == {"old"}

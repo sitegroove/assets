@@ -34,6 +34,7 @@ from pathlib import Path
 import yaml
 
 from assets import (
+    GraphSelector,
     Registry,
     SQLiteBackend,
     StateManager,
@@ -226,8 +227,9 @@ def main() -> None:
         ("+mart_sales_pipeline", "mart_sales_pipeline + all upstream"),
         ("raw_accounts+", "raw_accounts + all downstream"),
     ]
+    selector_engine = GraphSelector(registry)
     for selector, desc in selectors:
-        result = registry.select(selector)
+        result = selector_engine.execute(selector)
         print(f"  {selector:40s} -> {sorted(result.names)} ({desc})")
 
     # ── Step 8: Nested asset introspection ────────────────────────────

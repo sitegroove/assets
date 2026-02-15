@@ -205,7 +205,7 @@ For each asset in state but not desired:
 **StateManager.plan() flow:**
 ```
 plan(environment, selector)
-  1. registry.all() or registry.select()  ← desired assets from current registry
+  1. registry.all() or GraphSelector(registry).execute(selector)  ← desired assets
   2. _resolve_state(env)                  ← walk parent chain for shallow envs
   3. differ.diff(desired, current)        ← fingerprint-first
   4. return Plan(changeset)

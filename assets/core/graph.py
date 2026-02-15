@@ -127,14 +127,6 @@ class AssetGraph:
         """Return asset names matching a type (O(1) via index)."""
         return set(self._type_index.get(type_val, set()))
 
-    # — Selection —
-
-    def select(self, selector: str) -> SelectionResult:
-        from assets.selector.parser import SelectorParser
-
-        parser = SelectorParser(self)
-        return parser.execute(selector)
-
     # — Staleness —
 
     def stale(self, changed: set[str]) -> set[str]:

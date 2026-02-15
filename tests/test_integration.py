@@ -11,6 +11,7 @@ from assets import (
     Asset,
     Environment,
     EnvironmentConfig,
+    GraphSelector,
     Registry,
     SQLiteBackend,
     StateManager,
@@ -158,19 +159,20 @@ class TestFullWorkflow:
         _load_json_assets(registry, full_project / "models")
 
         # Tag selector
-        pii = registry.select("tag:pii")
+        selector = GraphSelector(registry)
+        pii = selector.execute("tag:pii")
         assert pii.names == {"staging.users"}
 
         # Kind selector
-        sources = registry.select("type:source")
+        sources = selector.execute("type:source")
         assert sources.names == {"raw.users", "raw.payments"}
 
         # Wildcard
-        raw = registry.select("raw.*")
+        raw = selector.execute("raw.*")
         assert raw.names == {"raw.users", "raw.payments"}
 
         # Graph expansion
-        downstream = registry.select("raw.users+")
+        downstream = selector.execute("raw.users+")
         assert "staging.users" in downstream.names
         assert "mart.enriched" in downstream.names
 

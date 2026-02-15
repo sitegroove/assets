@@ -1,4 +1,4 @@
-"""Selector parser — query assets by name, tag, type, and graph traversal."""
+"""Graph selector — query assets by id, tag, type, and graph traversal."""
 
 from __future__ import annotations
 
@@ -8,9 +8,11 @@ import re
 from typing import TYPE_CHECKING
 
 from assets.core.graph import SelectionResult
+from assets.selector.base import Selector
 
 if TYPE_CHECKING:
     from assets.core.graph import AssetGraph
+    from assets.core.registry import Registry
 
 # Matches patterns like: +name+2, +name, name+, name+3, +name+
 _GRAPH_PATTERN = re.compile(
@@ -20,11 +22,15 @@ _GRAPH_PATTERN = re.compile(
 logger = logging.getLogger(__name__)
 
 
-class SelectorParser:
-    """Parse and execute selector expressions against an AssetGraph."""
+class GraphSelector(Selector):
+    """Parse and execute selector expressions against a Registry graph."""
 
-    def __init__(self, graph: AssetGraph) -> None:
-        self._graph = graph
+    def __init__(self, registry: Registry) -> None:
+        self._registry = registry
+
+    @property
+    def _graph(self) -> AssetGraph:
+        return self._registry.graph
 
     def execute(self, selector: str) -> SelectionResult:
         """Parse a selector string and return matching assets.
@@ -145,3 +151,6 @@ class SelectorParser:
         if pattern in self._graph.assets:
             return {pattern}
         return set()
+
+
+SelectorParser = GraphSelector

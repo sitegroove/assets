@@ -83,7 +83,7 @@ registry.register(asset)
 # Query
 registry.get("staging.users")
 registry.all()
-registry.select("tag:pii")
+GraphSelector(registry).execute("tag:pii")
 registry.graph  # lazy AssetGraph
 ```
 
@@ -209,18 +209,28 @@ dbt-style query syntax for filtering assets:
 |---|---|---|
 | Exact name | `staging.users` | Single asset |
 | Tag filter | `tag:pii` | All with tag |
-| Kind filter | `kind:data_model` | All with kind |
-| Wildcard | `raw.*` | Glob match on name |
+| Type filter | `type:data_model` | All with type |
+| Wildcard | `raw.*` | Glob match on id |
 | Upstream | `+staging.users` | Asset + all ancestors |
 | Downstream | `staging.users+` | Asset + all descendants |
 | Both | `+staging.users+` | Ancestors + self + descendants |
 | Depth-limited | `staging.users+2` | Descendants up to depth 2 |
-| Intersection | `tag:pii,kind:data_model` | AND of multiple selectors |
+| Intersection | `tag:pii,type:data_model` | AND of multiple selectors |
+| State modified | `state:modified` | Created + updated + deleted IDs |
+| State created | `state:created` | Only newly created IDs |
+| State updated | `state:updated` | Only updated IDs |
+| State deleted | `state:deleted` | Only deleted IDs |
 
 ```python
-result = registry.select("tag:pii,kind:data_model")
-names = result.names  # set of matching asset names
+from assets import GraphSelector, StateSelector
+
+graph_selector = GraphSelector(registry)
+result = graph_selector.execute("tag:pii,type:data_model")
+names = result.names  # set of matching asset ids
 assets = result.assets  # list of matching Asset objects
+
+state_selector = StateSelector(registry, manager)
+impacted = state_selector.execute("state:modified+", environment="production")
 ```
 
 ## Multi-Environment

@@ -42,6 +42,7 @@ from utils import ColumnLineageResolver, JinjaRenderer
 from assets import (
     Asset,
     FieldMapping,
+    GraphSelector,
     Registry,
     SQLiteBackend,
 )
@@ -658,6 +659,7 @@ def bench_registry_graph(
     print(f"  Graph build:                        {_fmt(stats)}")
 
     graph = reg.graph
+    selector_engine = GraphSelector(reg)
 
     # Topological sort
     stats = _timed(lambda: graph.topological_sort())
@@ -697,8 +699,8 @@ def bench_registry_graph(
 
     # Selectors
     for selector in ["type:source", "type:mart", "tag:staging"]:
-        sel_result = graph.select(selector)
-        stats = _timed(lambda s=selector: graph.select(s))
+        sel_result = selector_engine.execute(selector)
+        stats = _timed(lambda s=selector: selector_engine.execute(s))
         results[f"select_{selector}"] = stats
         print(f"  Select '{selector}' ({len(sel_result.names)}):        {_fmt(stats)}")
 

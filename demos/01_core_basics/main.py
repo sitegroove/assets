@@ -4,7 +4,7 @@
 Run: python demos/01_core_basics/main.py
 """
 
-from assets import Asset, AssetField, Registry
+from assets import Asset, AssetField, GraphSelector, Registry
 
 # ──────────────────────────────────────────────────────────────
 # 1. Define a custom asset type
@@ -166,32 +166,34 @@ print(f"\nTopological order: {graph.topological_sort()}")
 
 print("\n=== Selectors ===\n")
 
+selector = GraphSelector(registry)
+
 # By tag
-pii = registry.select("tag:pii")
+pii = selector.execute("tag:pii")
 print(f"tag:pii -> {pii.names}")
 
 # By kind
-sources = registry.select("type:source")
+sources = selector.execute("type:source")
 print(f"type:source -> {sources.names}")
 
 # Wildcard
-raw = registry.select("raw.*")
+raw = selector.execute("raw.*")
 print(f"raw.* -> {raw.names}")
 
 # Upstream expansion
-upstream = registry.select("+mart.user_spending")
+upstream = selector.execute("+mart.user_spending")
 print(f"+mart.user_spending (asset + all ancestors) -> {upstream.names}")
 
 # Downstream expansion
-downstream = registry.select("raw.users+")
+downstream = selector.execute("raw.users+")
 print(f"raw.users+ (asset + all descendants) -> {downstream.names}")
 
 # Depth-limited
-depth1 = registry.select("raw.users+1")
+depth1 = selector.execute("raw.users+1")
 print(f"raw.users+1 (descendants depth=1) -> {depth1.names}")
 
 # Intersection
-intersect = registry.select("tag:pii,type:data_model")
+intersect = selector.execute("tag:pii,type:data_model")
 print(f"tag:pii,type:data_model (AND) -> {intersect.names}")
 
 # ──────────────────────────────────────────────────────────────

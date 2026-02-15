@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from assets.core.registry import Registry
 from assets.engine.differ import Differ
 from assets.engine.planner import Plan
+from assets.selector.parser import GraphSelector
 from assets.state.backend import StateBackend
 from assets.state.environment import Environment, EnvironmentConfig
 from assets.state.models import AssetState, DependencyState, StateSnapshot
@@ -147,7 +148,7 @@ class StateManager:
 
         # Get desired assets (optionally filtered by selector)
         if selector:
-            selection = self.registry.select(selector)
+            selection = GraphSelector(self.registry).execute(selector)
             desired = selection.assets
         else:
             desired = self.registry.all()
@@ -209,7 +210,7 @@ class StateManager:
                     deleted += 1
 
             state.updated_at = now
-            changed_ids = {c.asset_id for c in plan.changeset.asset_changes}
+            changed_ids = plan.changed_ids
             self.backend.save(env_name, state, changed_ids=changed_ids)
 
         return ApplyResult(
@@ -248,32 +249,26 @@ class StateManager:
         source_assets = source_state.assets
 
         if selector:
-            # Filter source assets by name matching
-            # Load registry to use selector
-            from assets.core.dependency import Dependency
-            from assets.core.graph import AssetGraph
-
-            temp_assets = {}
-            temp_dependencies: list[Dependency] = []
-            for name, asset_state in source_assets.items():
-                if not asset_state.deleted:
-                    asset = Asset.model_validate(asset_state.data)
-                    temp_assets[name] = asset
-                    for dep_name in dict.fromkeys(asset.depends_on):
-                        temp_dependencies.append(
-                            Dependency(source=dep_name, target=asset.id, type="ref")
-                        )
-
-            graph = AssetGraph.build(temp_assets, temp_dependencies)
-            selection = graph.select(selector)
-            selected_names = selection.names
+            source_registry = Registry()
+            source_registry.register_many(
+                [
+                    Asset.model_validate(asset_state.data)
+                    for asset_state in source_assets.values()
+                    if not asset_state.deleted
+                ]
+            )
+            selected_names = GraphSelector(source_registry).execute(selector).names
+            desired_assets = [
+                asset
+                for name in selected_names
+                if (asset := source_registry.get(name)) is not None
+            ]
         else:
             selected_names = set(source_assets.keys())
-
-        for name in selected_names:
-            asset_state = source_assets.get(name)
-            if asset_state and not asset_state.deleted:
-                desired_assets.append(Asset.model_validate(asset_state.data))
+            for name in selected_names:
+                asset_state = source_assets.get(name)
+                if asset_state and not asset_state.deleted:
+                    desired_assets.append(Asset.model_validate(asset_state.data))
 
         changeset = self._differ.diff(desired_assets, target_resolved.assets)
 

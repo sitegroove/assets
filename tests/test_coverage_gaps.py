@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
-from assets import Registry
+from assets import GraphSelector, Registry
 from assets.core.asset import Asset
 from assets.core.dependency import Dependency
 from assets.state.models import AssetState, DependencyState, StateSnapshot
@@ -298,41 +298,41 @@ class TestSelectorEdgeCases:
 
     def test_empty_selector(self, populated_registry: Registry) -> None:
         """Empty string should return empty result."""
-        result = populated_registry.select("")
+        result = GraphSelector(populated_registry).execute("")
         assert len(result.names) == 0
 
     def test_unknown_type_returns_empty(self, populated_registry: Registry) -> None:
         """type:nonexistent should return empty, not error."""
-        result = populated_registry.select("type:nonexistent_type")
+        result = GraphSelector(populated_registry).execute("type:nonexistent_type")
         assert len(result.names) == 0
 
     def test_unknown_tag_returns_empty(self, populated_registry: Registry) -> None:
         """tag:nonexistent should return empty, not error."""
-        result = populated_registry.select("tag:nonexistent_tag")
+        result = GraphSelector(populated_registry).execute("tag:nonexistent_tag")
         assert len(result.names) == 0
 
     def test_nonexistent_asset_returns_empty_with_warning(
         self, populated_registry: Registry
     ) -> None:
         """Selecting a nonexistent exact name should return empty or warn."""
-        result = populated_registry.select("does.not.exist")
+        result = GraphSelector(populated_registry).execute("does.not.exist")
         assert len(result.names) == 0
 
     def test_wildcard_no_match(self, populated_registry: Registry) -> None:
         """Wildcard that matches nothing should return empty."""
-        result = populated_registry.select("zzz.*")
+        result = GraphSelector(populated_registry).execute("zzz.*")
         assert len(result.names) == 0
 
     def test_intersection_multiple_selectors(
         self, populated_registry: Registry
     ) -> None:
         """Comma-separated selectors produce intersection (AND)."""
-        result = populated_registry.select("tag:staging,tag:pii")
+        result = GraphSelector(populated_registry).execute("tag:staging,tag:pii")
         assert result.names == {"staging.users"}
 
     def test_depth_limited_traversal(self, populated_registry: Registry) -> None:
         """Depth-limited downstream traversal."""
-        result = populated_registry.select("raw.users+1")
+        result = GraphSelector(populated_registry).execute("raw.users+1")
         assert "raw.users" in result.names
         assert "staging.users" in result.names
         # mart.enriched is 2 hops away — should NOT be included
@@ -340,7 +340,7 @@ class TestSelectorEdgeCases:
 
     def test_bidirectional_traversal(self, populated_registry: Registry) -> None:
         """Both upstream and downstream from a node."""
-        result = populated_registry.select("+staging.users+")
+        result = GraphSelector(populated_registry).execute("+staging.users+")
         assert "raw.users" in result.names
         assert "staging.users" in result.names
         assert "mart.enriched" in result.names
